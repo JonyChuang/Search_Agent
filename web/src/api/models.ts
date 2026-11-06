@@ -48,9 +48,9 @@ export interface ModelConfigPayload {
 }
 
 export const modelApi = {
-  list(type?: ModelType) {
+  list(type?: ModelType, signal?: AbortSignal) {
     const q = type ? `?type=${type}` : ''
-    return client.get<unknown, Wrapped<ModelConfigItem[]>>(`/models${q}`)
+    return client.get<unknown, Wrapped<ModelConfigItem[]>>(`/models${q}`, { signal })
   },
   create(payload: ModelConfigPayload) {
     return client.post<unknown, Wrapped<ModelConfigItem>>('/models', payload)
