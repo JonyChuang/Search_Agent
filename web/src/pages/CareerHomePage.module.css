@@ -26,7 +26,7 @@
   align-items: center;
   gap: 16px;
   border-radius: 22px;
-  padding: 28px clamp(24px, 4cqi, 48px);
+  padding: 18px clamp(24px, 4cqi, 48px);
   background: radial-gradient(ellipse at 85% 6%, #4b469b 0%, transparent 48%), linear-gradient(119deg, #191b40, #292864 68%, #293576);
   color: white;
   box-shadow: 0 11px 26px #22255e24;
@@ -36,9 +36,9 @@
 .heroCopy { position: relative; z-index: 1; min-width: 0; }
 .heroLabel { display: flex; align-items: center; gap: 9px; color: #dcddff; font-size: 12px; font-weight: 620; letter-spacing: .045em; }
 .heroLabel > span:not(:first-child) { width: 3px; height: 3px; border-radius: 50%; background: #afaef6; }
-.hero h1 { margin-top: 13px; font-size: clamp(30px, 4.1cqi, 48px); font-weight: 740; line-height: 1.14; letter-spacing: -.035em; }
-.hero p { margin-top: 12px; max-width: 475px; color: #e1e4ff; font-size: 15px; line-height: 1.75; overflow-wrap: anywhere; }
-.heroActions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 23px; }
+.hero h1 { margin-top: 8px; font-size: clamp(28px, 3.5cqi, 38px); font-weight: 740; line-height: 1.14; letter-spacing: -.035em; }
+.hero p { margin-top: 6px; max-width: 475px; color: #e1e4ff; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.heroActions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
 .heroActions a { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 39px; padding: 8px 14px; border-radius: 9px; font-weight: 650; }
 .heroActions a:focus-visible { outline-color: #d6d3ff; }
 .primary { background: #f4f2ff; color: #312a78; }
@@ -46,7 +46,7 @@
 .secondary { border: 1px solid #a9a4f376; color: #f3f1ff; background: #c7c3ff12; }
 .secondary:hover { color: white; background: #c7c3ff30; }
 
-.artwork { position: relative; width: 100%; max-width: 380px; justify-self: end; aspect-ratio: 440 / 248; }
+.artwork { position: relative; width: 100%; max-width: 290px; justify-self: end; aspect-ratio: 440 / 248; }
 .artwork > svg { display: block; width: 100%; height: 100%; stroke: #c1bfff67; stroke-width: 1.2; }
 .artwork .routeLine { stroke: #a4eee4; stroke-width: 1.6; }
 .artNode {
@@ -60,11 +60,11 @@
   background: #49428a;
   border: 1px solid #b8aef3a1;
   border-radius: 28%;
-  font-size: clamp(14px, 2.1cqi, 23px);
+  font-size: clamp(14px, 1.7cqi, 18px);
   box-shadow: 0 8px 18px #15133462;
 }
 .artStart { left: 34.3%; top: 64.1%; }
-.artCenter { left: 57%; top: 48.4%; width: 17%; font-size: clamp(22px, 3.1cqi, 36px); color: #fff; background: #6057bf; border-color: #bcb4ff; }
+.artCenter { left: 57%; top: 48.4%; width: 17%; font-size: clamp(20px, 2.5cqi, 27px); color: #fff; background: #6057bf; border-color: #bcb4ff; }
 .artFinish { left: 80%; top: 27%; color: #c7f9ee; background: #2e617c; border-color: #9cebdc9e; }
 .artCaption { position: absolute; right: 2%; bottom: 1%; color: #dcddff; font-size: 11px; letter-spacing: .065em; }
 
@@ -72,6 +72,8 @@
 .panel { padding: 20px; }
 .sectionHeading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 18px; margin-bottom: 15px; }
 .sectionHeading p { margin-top: 3px; color: var(--muted); line-height: 1.55; }
+.setupPanel { padding-block: 13px; }
+.setupPanel .sectionHeading { margin-bottom: 10px; }
 .outerHeading { padding-inline: 2px; }
 .setupProgress { display: grid; gap: 5px; color: var(--muted); text-align: right; font-size: 12px; }
 .setupProgress b { color: var(--accent); font-size: 14px; font-variant-numeric: tabular-nums; }
@@ -83,10 +85,10 @@
 .steps { grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
 .steps > li { min-width: 0; }
 .step, .feature { border: 1px solid #e5e9f3; background: #f8f9fd; color: var(--ink); transition: background .15s, border-color .15s; }
-.step { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; height: 100%; padding: 13px; border-radius: 12px; }
+.step { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; height: 100%; padding: 9px 12px; border-radius: 12px; }
 .step:hover, .feature:hover { background: #f0f0fc; border-color: #b7b5f2; color: var(--ink); }
 .stepNumber, .iconBox { display: grid; place-items: center; flex: none; }
-.stepNumber { width: 29px; height: 29px; border-radius: 8px; background: #eaeafd; color: #4644bb; font-size: 12px; font-weight: 700; }
+.stepNumber { width: 23px; height: 23px; border-radius: 8px; background: #eaeafd; color: #4644bb; font-size: 12px; font-weight: 700; }
 .currentStep { border-color: #a6a5f0; background: #f2f1ff; }
 .currentStep .stepNumber { color: #fff; background: #504bc9; }
 .doneStep .stepNumber { color: #126655; background: #dcf5ed; }

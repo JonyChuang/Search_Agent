@@ -119,7 +119,7 @@ export default function CareerHomePage() {
         <HeroArtwork />
       </header>
 
-      <section className={styles.panel} aria-labelledby="career-start-title">
+      <section className={`${styles.panel} ${styles.setupPanel}`} aria-labelledby="career-start-title">
         <div className={styles.sectionHeading}>
           <div><h2 id="career-start-title">开始求职准备</h2><p>从这些小步骤开始，建立你的第一份求职记录。</p></div>
           <div className={styles.setupProgress} aria-live="polite">
