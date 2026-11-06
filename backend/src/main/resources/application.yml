@@ -1,0 +1,44 @@
+server:
+  address: ${CAREER_BACKEND_BIND:127.0.0.1}
+  port: ${CAREER_BACKEND_PORT:8080}
+
+spring:
+  application:
+    name: career-backend
+  task:
+    scheduling:
+      pool:
+        size: 2
+  datasource:
+    url: ${CAREER_MYSQL_URL:jdbc:mysql://127.0.0.1:3307/search_agent?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${CAREER_MYSQL_USER:career}
+    password: ${CAREER_MYSQL_PASSWORD}
+
+management:
+  health:
+    diskspace:
+      enabled: false
+    ping:
+      enabled: false
+    ssl:
+      enabled: false
+  endpoints:
+    web:
+      base-path: /api/career
+      exposure:
+        include: health
+      discovery:
+        enabled: false
+  endpoint:
+    health:
+      show-components: always
+      show-details: never
+
+career:
+  auth:
+    jwt-secret: ${JWT_SECRET}
+    jwt-algorithm: ${JWT_ALGORITHM:HS256}
+  agent:
+    base-url: ${CAREER_AGENT_BASE_URL:http://127.0.0.1:8000}
+    dispatch-enabled: ${CAREER_AGENT_DISPATCH_ENABLED:true}
+    internal-token: ${CAREER_AGENT_INTERNAL_TOKEN:}

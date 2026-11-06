@@ -1,3 +1,7 @@
+> Search Agent 已确定架构：[Java 业务后端 + Python Agent](java-agent-architecture-2026-11-05.md)。当前入口：[求职项目修改清单](career-agent-change-list-2026-11-05.md) · [界面概念稿](design/career-navigation-preview.html)。
+>
+> 以下为 Comet 上游技术与面试学习文档索引，保留作为实现参考。其项目描述与作者经历不属于当前用户的真实经历。
+
 # Comet docs 总览与维护指南
 
 > 本目录是 Comet 的**后端设计 + Agent 岗面试学习资料**，按能力域分文件夹组织。

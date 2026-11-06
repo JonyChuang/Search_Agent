@@ -1,6 +1,14 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import MainLayout from './layouts/MainLayout'
 import HomePage from './pages/HomePage'
+import CareerHomePage from './pages/CareerHomePage'
+import ResumeWorkbenchPage from './pages/ResumeWorkbenchPage'
+import JobCompanyPage from './pages/JobCompanyPage'
+import ExperienceBankPage from './pages/ExperienceBankPage'
+import PracticePage from './pages/PracticePage'
+import TrainingPlanPage from './pages/TrainingPlanPage'
+import MockInterviewPage from './pages/MockInterviewPage'
+import { ApplicationAssistantPage, ApplicationBoardPage } from './pages/CareerApplicationsPage'
 import LoginPage from './pages/LoginPage'
 import ModelConfigPage from './pages/ModelConfigPage'
 import KnowledgeBasePage from './pages/KnowledgeBasePage'
@@ -45,7 +53,16 @@ export default function App() {
               </RequireAuth>
             }
           >
-            <Route index element={<HomePage />} />
+            <Route index element={<CareerHomePage />} />
+            <Route path="workspace" element={<HomePage />} />
+            <Route path="career/resume" element={<ResumeWorkbenchPage />} />
+            <Route path="career/jobs" element={<JobCompanyPage />} />
+            <Route path="career/questions" element={<ExperienceBankPage />} />
+            <Route path="career/practice" element={<PracticePage />} />
+            <Route path="career/plan" element={<TrainingPlanPage />} />
+            <Route path="career/interviews" element={<MockInterviewPage />} />
+            <Route path="career/apply" element={<ApplicationAssistantPage />} />
+            <Route path="career/applications" element={<ApplicationBoardPage />} />
             <Route path="chat" element={<ChatPage />} />
             <Route path="group-chat" element={<GroupChatPage />} />
             <Route path="research" element={<ResearchPage />} />

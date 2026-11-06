@@ -11,6 +11,19 @@
 #   knowledge_search 知识库检索 / memory_search 记忆检索 / web_search 联网搜索 / datetime 时间
 BUILTIN_SKILLS: list[dict] = [
     {
+        "key": "career_interview_review",
+        "name": "岗位面试复盘",
+        "description": "结合题库参考答案复盘一轮岗位面试问答",
+        "icon": "🎙️",
+        "prompt": (
+            "你是技术面试官。根据目标岗位、题目、参考答案、解析与用户的实际回答做一轮中文复盘。"
+            "指出答对的关键点、遗漏或错误，给出一段可练习的回答提纲，并提出一个后续练习方向。"
+            "结合参考答案核对技术事实，保留正确的其他解法。不要替用户虚构经历或给出录用结论。"
+        ),
+        "tool_keys": [],
+        "config": {"quick_prompts": [], "few_shots": []},
+    },
+    {
         "key": "kb_study",
         "name": "知识库学习",
         "description": "把知识库当老师：基于已入库资料讲解、答疑、出题，只依据资料不编造",

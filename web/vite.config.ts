@@ -2,7 +2,7 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'node:path'
 
-// 前端开发服务器：/api 代理到后端 8000
+// 求职业务使用 Java，其余 /api 路径继续使用 Comet。
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -13,8 +13,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      '^/api/career(?:/|\\?|$)': {
+        target: `http://127.0.0.1:${process.env.CAREER_BACKEND_PORT || '8080'}`,
+        changeOrigin: true,
+      },
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

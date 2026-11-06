@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.controllers.career_internal_controller import router as career_internal_router
 from app.controllers.router import api_router
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router)
+    app.include_router(career_internal_router)
     return app
 
 

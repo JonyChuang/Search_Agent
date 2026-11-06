@@ -4,17 +4,14 @@ import {
   BellOutlined,
   BookOutlined,
   CommentOutlined,
-  CustomerServiceOutlined,
   ClockCircleOutlined,
-  DeploymentUnitOutlined,
-  HddOutlined,
   HistoryOutlined,
+  FileTextOutlined,
   FileSearchOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MoreOutlined,
-  PictureOutlined,
   PlusOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -35,7 +32,6 @@ import { useGroupHeaderStore } from '@/stores/groupHeaderStore'
 import { agentTaskApi } from '@/api/agentTask'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import MusicPlayer from '@/components/MusicPlayer'
-import { useMusicStore } from '@/stores/musicStore'
 import logo from '@/images/logo.png'
 
 const { Sider, Content, Header } = Layout
@@ -46,42 +42,57 @@ const menuItems = [
     type: 'group' as const,
     label: '工作台',
     children: [
-      { key: '/', icon: <AppstoreOutlined />, label: '仪表盘' },
-      { key: '/chat', icon: <CommentOutlined />, label: '对话' },
-      { key: '/group-chat', icon: <TeamOutlined />, label: '群聊' },
-      { key: '/research', icon: <FileSearchOutlined />, label: '深度研究' },
-      { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
-      { key: '/traces', icon: <HistoryOutlined />, label: '执行轨迹' },
+      { key: '/', icon: <AppstoreOutlined />, label: '求职总览' },
+      { key: '/chat', icon: <CommentOutlined />, label: '求职助手' },
     ],
   },
   {
     type: 'group' as const,
-    label: '知识与记忆',
+    label: '求职准备',
     children: [
-      { key: '/knowledge', icon: <BookOutlined />, label: '知识库' },
-      { key: '/images', icon: <PictureOutlined />, label: '图片库' },
-      { key: '/memory', icon: <HddOutlined />, label: '记忆' },
-      { key: '/graph', icon: <DeploymentUnitOutlined />, label: '知识图谱' },
-      { key: '/music', icon: <CustomerServiceOutlined />, label: '音乐' },
+      { key: '/career/resume', icon: <FileTextOutlined />, label: '简历与经历' },
+      { key: '/career/jobs', icon: <FileSearchOutlined />, label: '岗位与公司' },
+      { key: '/knowledge', icon: <BookOutlined />, label: '我的资料' },
     ],
   },
   {
     type: 'group' as const,
-    label: '检索与收藏',
+    label: '面试训练',
     children: [
-      { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
-      { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
+      { key: '/career/questions', label: '面经与题库' },
+      { key: '/career/practice', label: '刷题练习' },
+      { key: '/career/interviews', label: '模拟面试' },
     ],
   },
   {
     type: 'group' as const,
+    label: '求职进展',
+    children: [
+      { key: '/career/apply', label: '网申助手' },
+      { key: '/career/applications', label: '投递看板' },
+      { key: '/career/plan', label: '岗位训练计划' },
+    ],
+  },
+  {
+    key: 'settings',
+    icon: <SettingOutlined />,
     label: '设置',
     children: [
       { key: '/settings/models', icon: <SettingOutlined />, label: '模型配置' },
       { key: '/settings/agent', icon: <RobotOutlined />, label: '角色配置' },
-      { key: '/settings/skills', icon: <ThunderboltOutlined />, label: '技能' },
+      { key: '/settings/skills', icon: <ThunderboltOutlined />, label: '技能中心' },
       { key: '/settings/tools', icon: <ToolOutlined />, label: '工具配置' },
       { key: '/settings/notify', icon: <BellOutlined />, label: '消息推送' },
+    ],
+  },
+  {
+    type: 'group' as const,
+    label: '个人工作区',
+    children: [
+      { key: '/workspace', icon: <AppstoreOutlined />, label: 'Comet 仪表盘' },
+      { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
+      { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
+      { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
     ],
   },
 ]
@@ -128,6 +139,7 @@ export default function MainLayout() {
   // 桌面端：侧边栏折叠（窄条）；移动端：抽屉开关
   const [collapsed, setCollapsed] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(true)
 
   // 切换路由后自动关闭移动端抽屉
   useEffect(() => {
@@ -156,10 +168,6 @@ export default function MainLayout() {
 
   // 音乐页沉浸式深色主题：进入 /music 整体变深色霓虹，离开自动恢复
   const immersive = location.pathname === '/music'
-
-  // 浮动音乐播放器:在非音乐页且播放器可见时,给主内容区底部留出避让空间,防止右下角被遮住
-  const playerVisible = useMusicStore((s) => s.visible)
-  const needPlayerPadding = playerVisible && !immersive
 
   // 主壳挂载时锁死 html/body 滚动（比 :has 更稳），卸载后恢复登录/分享页整页滚动
   useEffect(() => {
@@ -195,7 +203,7 @@ export default function MainLayout() {
         style={{ width: 36, height: 36, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }}
       />
       {!mini && (
-        <span style={{ fontWeight: 600, fontSize: 19, whiteSpace: 'nowrap' }}>彗记 Comet</span>
+        <span style={{ fontWeight: 600, fontSize: 19, whiteSpace: 'nowrap' }}>Search Agent</span>
       )}
     </div>
   )
@@ -226,6 +234,10 @@ export default function MainLayout() {
         mode="inline"
         theme={immersive ? 'dark' : 'light'}
         inlineCollapsed={mini}
+        openKeys={mini ? undefined : settingsOpen ? ['settings'] : []}
+        onOpenChange={(keys) => {
+          if (!mini) setSettingsOpen(keys.includes('settings'))
+        }}
         selectedKeys={[location.pathname]}
         items={items}
         onClick={({ key }) => navigate(key)}
@@ -489,13 +501,12 @@ export default function MainLayout() {
             className="app-shell-content"
             style={{
               padding: isMobile ? 14 : 24,
-              paddingBottom: needPlayerPadding ? (isMobile ? 96 : 120) : undefined,
             }}
           >
             <Outlet />
           </Content>
         </Layout>
-        <MusicPlayer />
+        {immersive && <MusicPlayer />}
       </Layout>
     )
   }

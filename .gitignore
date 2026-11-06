@@ -48,6 +48,7 @@ dist-ssr/
 coverage/
 .vscode/
 # ===== 构建产物 =====
+/backend/target/
 *.log
 logs/
 tmp/

@@ -7,6 +7,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 
 from app.config import settings
+from app.core.exceptions import BizError
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -48,7 +49,10 @@ def decode_token(token: str) -> Optional[dict[str, Any]]:
 
 # ---- API Key 对称加密（Fernet）----
 def _fernet() -> Fernet:
-    return Fernet(settings.fernet_key.encode())
+    try:
+        return Fernet(settings.fernet_key.encode())
+    except ValueError as error:
+        raise BizError("服务端 API Key 加密配置无效，请检查 FERNET_KEY 后重启 Comet", status_code=503) from error
 
 
 def encrypt_secret(plain: str) -> str:

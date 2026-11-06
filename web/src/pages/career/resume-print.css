@@ -1,0 +1,32 @@
+.career-print-sheet {
+  display: none;
+}
+
+.career-resume-preview,
+.career-print-sheet {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  html:has(> body > .career-print-sheet),
+  html:has(> body > .career-print-sheet) body {
+    height: auto;
+    overflow: visible;
+    background: white;
+    color: black;
+  }
+
+  body:has(> .career-print-sheet) > :not(.career-print-sheet) {
+    display: none !important;
+  }
+
+  .career-print-sheet {
+    display: block;
+    padding: 10mm;
+  }
+
+  .career-print-sheet h3 {
+    break-after: avoid;
+  }
+}

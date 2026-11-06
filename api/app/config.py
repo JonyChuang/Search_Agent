@@ -1,6 +1,7 @@
 """应用配置：全部从环境变量 / .env 读取，不硬编码。"""
 from functools import lru_cache
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 10080  # 7 天（免频繁重登）
     refresh_token_expire_days: int = 30
     fernet_key: str = "change-me-fernet-key"
+    career_backend_base_url: str = "http://127.0.0.1:8080"
+    career_agent_internal_token: SecretStr = SecretStr("")
 
     # PostgreSQL
     postgres_host: str = "localhost"

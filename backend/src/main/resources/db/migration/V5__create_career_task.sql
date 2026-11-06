@@ -1,0 +1,20 @@
+CREATE TABLE career_task (
+    id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    request_id CHAR(36) NOT NULL,
+    kind VARCHAR(24) NOT NULL,
+    status VARCHAR(12) NOT NULL DEFAULT 'QUEUED',
+    request_json JSON NOT NULL,
+    context_json JSON NOT NULL,
+    result_json JSON,
+    error_message VARCHAR(250),
+    generation INT NOT NULL DEFAULT 0,
+    lease_token CHAR(36),
+    lease_until TIMESTAMP(6),
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_task_request (user_id, request_id),
+    INDEX ix_task_queue (status, lease_until, created_at),
+    INDEX ix_task_owner (user_id, created_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

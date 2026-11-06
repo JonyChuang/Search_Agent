@@ -1,3 +1,27 @@
+# Search Agent — 研究生求职与面试训练 Agent
+
+基于 [Comet](https://github.com/lm041520/Comet) 增量改造，开发仓库为 [JonyChuang/Search_Agent](https://github.com/JonyChuang/Search_Agent)。
+
+Search Agent 面向准备实习和校招的研究生。用目标 JD 和已确认的经历制定岗位训练计划，练习后生成复习建议，再整理简历和申请材料。
+
+**当前状态（2026-11-06）** 使用 Comet 账号登录后，可维护求职档案、经历和带招聘来源的岗位记录，查阅公开面经，按岗位方向刷题、查看历史和复习错题。求职工作流还提供岗位训练计划、单轮模拟面试、简历草稿版本、网申草稿和投递看板。Java 按登录用户隔离个人业务数据，React 通过开发代理访问求职业务接口。
+
+- [v1 启动、演示与验收记录](docs/career-agent-v1.md)
+- [第一天本地启动与验收](docs/career-agent-day-1-2026-11-06.md)
+- [经历与岗位阶段的配置和验收](docs/career-agent-profile-jobs.md)
+- [第三天题库、练习与错题复习](docs/career-agent-day-3-practice.md)
+- [第四、五天岗位训练与申请材料](docs/career-agent-day-4-5-workflow.md)
+- [逐日交付计划](docs/career-agent-delivery-plan-2026-11-12.md)
+- [Java 业务后端 + Python Agent 架构决定与实施顺序](docs/java-agent-architecture-2026-11-05.md)
+- [Agent 工程设计与简历成果路线](docs/agent-engineering-highlights-2026-11-05.md)
+- [求职产品范围与修改清单](docs/career-agent-change-list-2026-11-05.md)
+- [可点击界面概念稿（示例数据）](docs/design/career-navigation-preview.html)
+- [项目开发约定](AGENTS.md)
+
+下方保留 Comet 上游的功能与运行说明。上游介绍中的能力和指标不代表本项目已经验证或已完成求职场景适配。
+
+---
+
 # Comet（彗记）— 个人 AI 知识库与记忆助手
 
 > Personal AI Knowledge & Memory Assistant

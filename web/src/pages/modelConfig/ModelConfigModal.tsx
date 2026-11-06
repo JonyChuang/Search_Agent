@@ -96,7 +96,7 @@ export default function ModelConfigModal({
           label="模型名称"
           rules={[{ required: true, message: '请输入模型名称' }]}
         >
-          <Input placeholder="如：deepseek-chat / gpt-4o / text-embedding-v3" />
+          <Input placeholder="如：deepseek-flash / gpt-4o / text-embedding-v3" />
         </Form.Item>
         <Form.Item
           name="api_key"

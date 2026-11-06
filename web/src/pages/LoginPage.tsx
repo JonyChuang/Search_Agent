@@ -177,9 +177,9 @@ export default function LoginPage() {
       <div className="applogin-bg" />
       <div className="applogin-box">
         <img src={logo} alt="Comet" className="applogin-logo" />
-        <h1 className="applogin-title">彗记 Comet</h1>
+        <h1 className="applogin-title">Search Agent</h1>
         <p className="applogin-sub">
-          {tab === 'login' ? '登录以继续你的知识之旅' : '创建账号，开启你的 AI 知识库'}
+          {tab === 'login' ? '登录求职与面试训练工作台' : '创建账号，开始准备求职'}
         </p>
         <Tabs
           activeKey={tab}
