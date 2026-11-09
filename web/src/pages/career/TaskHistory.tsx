@@ -11,6 +11,12 @@ const status = {
   SUCCEEDED: { label: '已完成', color: 'success' },
   FAILED: { label: '失败', color: 'error' },
 }
+const trainingStepLabels = {
+  FIND_QUESTIONS: '待查题',
+  GENERATE_PLAN: '题目已保存 · 待生成计划',
+  SAVE_PLAN: '计划草稿已保存 · 待确认结果',
+  COMPLETE: '计划已保存',
+}
 
 export default function TaskHistory({ kind, render }: { kind: TaskKind; render?: (task: CareerTask) => ReactNode }) {
   const [page, setPage] = useState(1)
@@ -46,7 +52,10 @@ export default function TaskHistory({ kind, render }: { kind: TaskKind; render?:
     <Space direction="vertical" style={{ display: 'flex' }}>
       {data.items.map((task) => (
         <Card key={task.id} size="small" title={task.job} extra={<Tag color={status[task.status].color}>{status[task.status].label}</Tag>}>
-          <Paragraph type="secondary">创建于 {new Date(task.createdAt).toLocaleString()} · 执行次数 {task.generation}</Paragraph>
+          <Paragraph type="secondary">
+            创建于 {new Date(task.createdAt).toLocaleString()} · 执行次数 {task.generation}
+            {task.trainingStep && ` · ${trainingStepLabels[task.trainingStep]}`}
+          </Paragraph>
           {task.error && <Alert type="error" message={task.error} action={
             <Button loading={action.saving} onClick={() => action.run(async () => {
               await careerWorkflow.retry(task.id)

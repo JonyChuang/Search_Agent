@@ -99,7 +99,7 @@ class CareerDataIntegrationTest {
     }
 
     @Test
-    void trainingToolsRejectExpiredLeasesAndCommitOnlyOnePlan() throws Exception {
+    void trainingCheckpointsSurviveNewLeaseAndRejectConflictingWrites() throws Exception {
         String job = createWorkflowJob();
         createWorkflowFact(true);
         String task = savedId("/api/career/tasks/training", """
@@ -109,36 +109,51 @@ class CareerDataIntegrationTest {
         String expired = UUID.randomUUID().toString();
         jdbc.update("""
                 UPDATE career_task SET status = 'RUNNING', generation = 1, lease_token = ?,
-                    lease_until = DATE_SUB(CURRENT_TIMESTAMP(6), INTERVAL 1 SECOND) WHERE id = ?
+                    lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND) WHERE id = ?
                 """, expired, task);
-        mvc.perform(get(tools + "/questions").header("X-Career-Service", "integration-test-service-token")
-                        .header("X-Career-Lease", expired)).andExpect(status().isConflict());
+        String plan = """
+                {"analysis":"分析","steps":["步骤"],"questions":[{"id":"%s","version":1}]}
+                """.formatted(HASHCODE);
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+                        .header("X-Career-Lease", expired).contentType("application/json").content(plan))
+                .andExpect(status().isConflict());
+        var catalog = mvc.perform(put(tools + "/questions").header("X-Career-Service", "integration-test-service-token")
+                        .header("X-Career-Lease", expired)).andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].correctAnswer").doesNotExist()).andReturn().getResponse().getContentAsString();
         String lease = UUID.randomUUID().toString();
         jdbc.update("""
                 UPDATE career_task SET generation = 2, lease_token = ?,
                     lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND) WHERE id = ?
                 """, lease, task);
-        mvc.perform(get(tools + "/questions").header("X-Career-Service", "wrong-token")
+        mvc.perform(put(tools + "/questions").header("X-Career-Service", "wrong-token")
                         .header("X-Career-Lease", lease)).andExpect(status().isUnauthorized());
-        mvc.perform(get(tools + "/questions").header("X-Career-Service", "integration-test-service-token")
-                        .header("X-Career-Lease", lease)).andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].correctAnswer").doesNotExist());
-        String plan = """
-                {"analysis":"分析","steps":["步骤"],"questions":[{"id":"%s","version":1}]}
-                """.formatted(HASHCODE);
-        mvc.perform(post(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+        var resumedCatalog = mvc.perform(put(tools + "/questions").header("X-Career-Service", "integration-test-service-token")
+                        .header("X-Career-Lease", lease)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertEquals(json.readTree(catalog), json.readTree(resumedCatalog));
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
                         .header("X-Career-Lease", expired).contentType("application/json").content(plan))
                 .andExpect(status().isConflict());
-        mvc.perform(post(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+                        .header("X-Career-Lease", lease).contentType("application/json").content(plan.replace("1}", "999}")))
+                .andExpect(status().isBadRequest());
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
                         .header("X-Career-Lease", lease).contentType("application/json").content(plan))
                 .andExpect(status().isOk());
-        mvc.perform(post(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
                         .header("X-Career-Lease", lease).contentType("application/json").content(plan))
+                .andExpect(status().isOk());
+        mvc.perform(put(tools + "/plan").header("X-Career-Service", "integration-test-service-token")
+                        .header("X-Career-Lease", lease).contentType("application/json").content(plan.replace("分析", "不同分析")))
                 .andExpect(status().isConflict());
         mvc.perform(get("/api/career/tasks/" + task).header("Authorization", access(owner)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("SUCCEEDED"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("RUNNING"))
                 .andExpect(jsonPath("$.data.generation").value(2))
-                .andExpect(jsonPath("$.data.result.questions[0].id").value(HASHCODE));
+                .andExpect(jsonPath("$.data.trainingStep").value("SAVE_PLAN"))
+                .andExpect(jsonPath("$.data.result").isEmpty());
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM career_task WHERE id = ? AND training_catalog_at IS NOT NULL
+                    AND training_draft_at IS NOT NULL AND JSON_LENGTH(training_draft_json, '$.questions') = 1
+                """, Integer.class, task));
     }
 
     @Test

@@ -17,6 +17,7 @@ export interface CareerTask {
   result: { analysis?: string; questions?: Question[]; steps?: string[]; feedback?: string } | null
   error: string | null
   generation: number
+  trainingStep?: 'FIND_QUESTIONS' | 'GENERATE_PLAN' | 'SAVE_PLAN' | 'COMPLETE' | null
   createdAt: string
 }
 

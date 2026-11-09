@@ -101,24 +101,38 @@ class CareerTasks {
         return new TaskPage(rows.stream().limit(20).map(this::view).toList(), rows.size() > 20);
     }
 
-    List<PracticeService.Question> questions(CareerTaskStore.Row row) {
-        return practice.questions(row.context().path("role").asText()).stream().limit(30).toList();
+    JsonNode checkpointQuestions(CareerTaskStore.Row row) {
+        if (row.trainingCatalog() != null) {
+            return row.trainingCatalog();
+        }
+        var catalog = practice.questions(row.context().path("role").asText()).stream().limit(30).toList();
+        if (catalog.isEmpty()) {
+            throw new ResponseStatusException(CONFLICT, "当前岗位方向暂无训练题目");
+        }
+        return store.checkpointCatalog(row, json.valueToTree(catalog)).map(CareerTaskStore.Row::trainingCatalog)
+                .orElseThrow(() -> new ResponseStatusException(CONFLICT, "训练任务执行代次已失效"));
     }
 
-    void savePlan(CareerTaskStore.Row row, Plan input) {
-        var catalog = questions(row);
+    void checkpointPlan(CareerTaskStore.Row row, Plan input) {
+        var catalog = row.trainingCatalog();
+        if (catalog == null) {
+            throw new ResponseStatusException(CONFLICT, "请先完成查题");
+        }
         var ids = new HashSet<String>();
         var selected = input.questions().stream().map(ref -> {
             if (!ids.add(ref.id())) {
                 throw new ResponseStatusException(BAD_REQUEST, "训练题目不能重复");
             }
-            return catalog.stream().filter(q -> q.id().equals(ref.id()) && q.version() == ref.version())
+            return StreamSupport.stream(catalog.spliterator(), false)
+                    .filter(q -> q.path("id").asText().equals(ref.id()) && q.path("version").asInt() == ref.version())
                     .findFirst().orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "训练题目或版本无效"));
         }).toList();
         var result = json.valueToTree(Map.of("analysis", input.analysis(), "steps", input.steps(),
                 "questions", selected));
-        if (!store.finish(row, result, null)) {
-            throw new ResponseStatusException(CONFLICT, "任务执行已结束或代次已失效");
+        var saved = store.checkpointDraft(row, result).map(CareerTaskStore.Row::trainingDraft)
+                .orElseThrow(() -> new ResponseStatusException(CONFLICT, "训练任务执行代次已失效"));
+        if (!saved.equals(result)) {
+            throw new ResponseStatusException(CONFLICT, "训练任务已有不同的计划草稿");
         }
     }
 
@@ -147,7 +161,14 @@ class CareerTasks {
         }
         var job = row.context().path("job");
         return new Task(row.id(), row.kind(), row.status(), row.request(), job.path("label").asText(), interview,
-                row.result(), row.error(), row.generation(), row.createdAt(), row.updatedAt());
+                row.result(), row.error(), row.generation(), trainingStep(row), row.createdAt(), row.updatedAt());
+    }
+
+    private static String trainingStep(CareerTaskStore.Row row) {
+        if (!"TRAINING".equals(row.kind())) return null;
+        if ("SUCCEEDED".equals(row.status())) return "COMPLETE";
+        if (row.trainingDraft() != null) return "SAVE_PLAN";
+        return row.trainingCatalog() == null ? "FIND_QUESTIONS" : "GENERATE_PLAN";
     }
 
     private static Map<String, String> jobContext(JobService.Entry job) {
@@ -171,6 +192,6 @@ class CareerTasks {
     record QuestionRef(@NotNull @Pattern(regexp = "[a-z0-9-]{1,64}") String id,
             @NotNull @Positive Integer version) {}
     record Task(String id, String kind, String status, JsonNode request, String job, JsonNode interview,
-            JsonNode result, String error, int generation, Instant createdAt, Instant updatedAt) {}
+            JsonNode result, String error, int generation, String trainingStep, Instant createdAt, Instant updatedAt) {}
     record TaskPage(List<Task> items, boolean hasMore) {}
 }

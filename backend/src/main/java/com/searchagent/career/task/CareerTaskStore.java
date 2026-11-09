@@ -75,6 +75,25 @@ class CareerTaskStore {
                 """).params(id.toString(), lease.toString()).query(this::row).optional();
     }
 
+    Optional<Row> checkpointCatalog(Row row, JsonNode catalog) {
+        db.sql("""
+                UPDATE career_task SET training_catalog_json = ?, training_catalog_at = CURRENT_TIMESTAMP(6)
+                WHERE id = ? AND generation = ? AND lease_token = ? AND status = 'RUNNING'
+                    AND lease_until > CURRENT_TIMESTAMP(6) AND training_catalog_json IS NULL
+                """).params(catalog.toString(), row.id(), row.generation(), row.lease()).update();
+        return active(UUID.fromString(row.id()), UUID.fromString(row.lease()));
+    }
+
+    Optional<Row> checkpointDraft(Row row, JsonNode draft) {
+        db.sql("""
+                UPDATE career_task SET training_draft_json = ?, training_draft_at = CURRENT_TIMESTAMP(6)
+                WHERE id = ? AND generation = ? AND lease_token = ? AND status = 'RUNNING'
+                    AND lease_until > CURRENT_TIMESTAMP(6) AND training_catalog_json IS NOT NULL
+                    AND training_draft_json IS NULL
+                """).params(draft.toString(), row.id(), row.generation(), row.lease()).update();
+        return active(UUID.fromString(row.id()), UUID.fromString(row.lease()));
+    }
+
     boolean finish(Row row, JsonNode result, String error) {
         return db.sql("""
                 UPDATE career_task SET status = ?, result_json = ?, error_message = ?,
@@ -96,6 +115,7 @@ class CareerTaskStore {
     private Row row(ResultSet rs, int index) throws SQLException {
         return new Row(rs.getString("id"), rs.getString("user_id"), rs.getString("kind"), rs.getString("status"),
                 tree(rs.getString("request_json")), tree(rs.getString("context_json")), tree(rs.getString("result_json")),
+                tree(rs.getString("training_catalog_json")), tree(rs.getString("training_draft_json")),
                 rs.getString("error_message"), rs.getInt("generation"), rs.getString("lease_token"),
                 rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant());
     }
@@ -109,5 +129,6 @@ class CareerTaskStore {
     }
 
     record Row(String id, String user, String kind, String status, JsonNode request, JsonNode context,
-            JsonNode result, String error, int generation, String lease, Instant createdAt, Instant updatedAt) {}
+            JsonNode result, JsonNode trainingCatalog, JsonNode trainingDraft, String error,
+            int generation, String lease, Instant createdAt, Instant updatedAt) {}
 }

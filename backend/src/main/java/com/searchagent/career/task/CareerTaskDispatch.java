@@ -3,9 +3,11 @@ package com.searchagent.career.task;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Map;
+import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.NullNode;
 import jakarta.validation.Validator;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -56,35 +58,49 @@ class CareerTaskDispatch {
     }
 
     private void run(CareerTaskStore.Row row) {
+        if (row.trainingDraft() != null) {
+            store.finish(row, row.trainingDraft(), null);
+            return;
+        }
         if (token.isBlank()) {
             store.finish(row, null, "Agent 内部服务未配置");
             return;
         }
-        JsonNode result;
+        JsonNode result = null;
+        String errorMessage = null;
+        boolean training = "TRAINING".equals(row.kind());
         try {
             result = client.post().uri("/internal/v1/tasks")
                     .headers(headers -> headers.setBearerAuth(token))
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("id", row.id(), "lease", row.lease(), "userId", row.user(),
-                            "kind", row.kind(), "context", row.context()))
+                            "kind", row.kind(), "context", row.context(), "trainingCatalog",
+                            row.trainingCatalog() == null ? NullNode.getInstance() : row.trainingCatalog()))
                     .retrieve().body(JsonNode.class);
-            if ("TRAINING".equals(row.kind())) {
-                // The scoped plan tool commits the training result before the Agent returns.
-                store.finish(row, null, "Agent 未保存训练计划");
-                return;
+            if (!training) {
+                var evaluation = json.treeToValue(result, Evaluation.class);
+                if (evaluation == null || !validator.validate(evaluation).isEmpty()) {
+                    throw new IllegalArgumentException("Invalid evaluation");
+                }
+                result = json.valueToTree(evaluation);
             }
-            var evaluation = json.treeToValue(result, Evaluation.class);
-            if (evaluation == null || !validator.validate(evaluation).isEmpty()) {
-                throw new IllegalArgumentException("Invalid evaluation");
-            }
-            result = json.valueToTree(evaluation);
         } catch (Exception error) {
             log.warn("Career task {} generation {} failed ({})", row.id(), row.generation(),
                     error instanceof RestClientResponseException http ? http.getStatusCode() : error.getClass().getSimpleName());
-            store.finish(row, null, failure(error));
-            return;
+            result = null;
+            errorMessage = failure(error);
         }
-        store.finish(row, result, null);
+        if (training) {
+            // The draft may have committed even if the Agent response was lost.
+            result = store.active(UUID.fromString(row.id()), UUID.fromString(row.lease()))
+                    .map(CareerTaskStore.Row::trainingDraft).orElse(null);
+            if (result != null) {
+                errorMessage = null;
+            } else if (errorMessage == null) {
+                errorMessage = "Agent 未生成训练计划";
+            }
+        }
+        store.finish(row, result, errorMessage);
     }
 
     private static String failure(Exception error) {

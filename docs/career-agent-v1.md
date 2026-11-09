@@ -1,5 +1,7 @@
 # Search Agent v1 启动与验收
 
+后续训练检查点和实测见[训练步骤恢复与模型基线](career-agent-training-checkpoints.md)。
+
 按[本地启动说明](career-agent-day-1-2026-11-06.md#本地启动)启动存储和三个应用。从 `api/.env.example` 创建本地配置，按模板说明生成 `FERNET_KEY`。使用已有 PostgreSQL 时，沿用原有加密密钥。Java 与 Comet 使用相同的 JWT 签名密钥、算法和内部服务令牌。打开 [本地网页](http://localhost:5173)，确认 [求职服务](http://localhost:5173/api/career/health) 和 [Comet 存储](http://localhost:5173/api/health) 都已就绪。
 
 ## 从岗位走到投递
@@ -30,7 +32,7 @@
 | 任务中断恢复 | 训练任务进入第 1 次执行且已向模型发起请求后，终止并重启 Java。两分钟租约到期后，服务自动重新领取同一任务，第 2 次执行成功，历史中只有一份计划 |
 | 模型保存 | 复现网页入口返回 500。按当前配置重启本机 Comet 后，同一入口成功保存临时 DeepSeek 配置，验证后已清理。新增回归测试检查无效 `FERNET_KEY` 的错误提示 |
 | 静态检查与构建 | Python Ruff 和 5 项求职测试通过。前端 TypeScript 和生产构建通过 |
-| 真实模型 | 需用已配置的供应商账号完成工具调用和岗位任务 |
+| 真实模型 | 2026-11-09 使用 `deepseek-flash` 完成训练、复习和面试，详见[真实模型基线](career-agent-training-checkpoints.md#真实模型基线) |
 
 Flyway 提示当前版本的已验证 MySQL 范围。Vite 构建仍有包体积和混合导入提示。
 

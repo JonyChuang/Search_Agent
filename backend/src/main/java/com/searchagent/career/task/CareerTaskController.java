@@ -5,15 +5,14 @@ import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.List;
 import java.util.UUID;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
-import com.searchagent.career.practice.PracticeService;
 import com.searchagent.career.web.CareerResponse;
 import com.searchagent.career.web.CareerUser;
 
@@ -71,16 +70,16 @@ class CareerTaskTools {
         this.secret = token.isBlank() ? new byte[0] : token.getBytes(StandardCharsets.UTF_8);
     }
 
-    @GetMapping("/questions")
-    List<PracticeService.Question> questions(@PathVariable UUID id, @RequestHeader("X-Career-Service") String token,
+    @PutMapping("/questions")
+    JsonNode questions(@PathVariable UUID id, @RequestHeader("X-Career-Service") String token,
             @RequestHeader("X-Career-Lease") UUID lease) {
-        return tasks.questions(requireTraining(id, token, lease));
+        return tasks.checkpointQuestions(requireTraining(id, token, lease));
     }
 
-    @PostMapping("/plan")
+    @PutMapping("/plan")
     void plan(@PathVariable UUID id, @RequestHeader("X-Career-Service") String token,
             @RequestHeader("X-Career-Lease") UUID lease, @Valid @RequestBody CareerTasks.Plan input) {
-        tasks.savePlan(requireTraining(id, token, lease), input);
+        tasks.checkpointPlan(requireTraining(id, token, lease), input);
     }
 
     private CareerTaskStore.Row requireTraining(UUID id, String token, UUID lease) {

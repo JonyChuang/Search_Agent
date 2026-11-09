@@ -35,8 +35,8 @@ class CareerSecurity {
                 .authorizeHttpRequests(requests -> requests
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/career/health").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/internal/career/tasks/*/questions").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/internal/career/tasks/*/plan").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/internal/career/tasks/*/questions",
+                                "/internal/career/tasks/*/plan").permitAll()
                         .requestMatchers("/api/career/**").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> {}))
