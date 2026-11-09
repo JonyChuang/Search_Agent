@@ -104,8 +104,12 @@ class CareerTaskDispatch {
     }
 
     private static String failure(Exception error) {
-        if (error instanceof RestClientResponseException http && http.getStatusCode().value() == 412) {
-            return "请在模型配置中设置支持工具调用的默认对话模型，然后重试";
+        if (error instanceof RestClientResponseException http) {
+            return switch (http.getStatusCode().value()) {
+                case 412 -> "请在模型配置中设置支持工具调用的默认对话模型，然后重试";
+                case 422 -> "模型未返回符合工具格式的结果。可以重试，或切换支持工具调用的模型。";
+                default -> "Agent 执行失败，请稍后重试";
+            };
         }
         return "Agent 执行失败，请稍后重试";
     }

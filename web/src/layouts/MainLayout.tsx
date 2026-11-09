@@ -74,6 +74,15 @@ const menuItems = [
     ],
   },
   {
+    type: 'group' as const,
+    label: '个人工作区',
+    children: [
+      { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
+      { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
+      { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
+    ],
+  },
+  {
     key: 'settings',
     icon: <SettingOutlined />,
     label: '设置',
@@ -83,16 +92,6 @@ const menuItems = [
       { key: '/settings/skills', icon: <ThunderboltOutlined />, label: '技能中心' },
       { key: '/settings/tools', icon: <ToolOutlined />, label: '工具配置' },
       { key: '/settings/notify', icon: <BellOutlined />, label: '消息推送' },
-    ],
-  },
-  {
-    type: 'group' as const,
-    label: '个人工作区',
-    children: [
-      { key: '/workspace', icon: <AppstoreOutlined />, label: 'Comet 仪表盘' },
-      { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
-      { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
-      { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
     ],
   },
 ]
@@ -460,6 +459,12 @@ export default function MainLayout() {
                   icon: <UserOutlined />,
                   label: '个人中心',
                   onClick: () => navigate('/profile'),
+                },
+                {
+                  key: 'comet-workspace',
+                  icon: <AppstoreOutlined />,
+                  label: 'Comet 工作台',
+                  onClick: () => navigate('/workspace'),
                 },
                 { type: 'divider' },
                 {
