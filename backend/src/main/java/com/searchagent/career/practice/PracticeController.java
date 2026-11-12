@@ -1,7 +1,9 @@
 package com.searchagent.career.practice;
 
 import java.util.List;
+import java.util.UUID;
 
+import com.searchagent.career.job.JobService;
 import com.searchagent.career.web.CareerResponse;
 import com.searchagent.career.web.CareerUser;
 import jakarta.validation.Valid;
@@ -18,14 +20,21 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/career")
 class PracticeController {
     private final PracticeService service;
+    private final JobService jobs;
 
-    PracticeController(PracticeService service) {
+    PracticeController(PracticeService service, JobService jobs) {
         this.service = service;
+        this.jobs = jobs;
     }
 
     @GetMapping("/interview-notes")
     CareerResponse<List<PracticeService.InterviewNote>> notes() {
         return CareerResponse.ok(service.notes());
+    }
+
+    @GetMapping("/recommendations")
+    CareerResponse<PracticeService.Recommendations> recommendations(@CareerUser String userId, @RequestParam UUID jobId) {
+        return CareerResponse.ok(service.recommendations(jobs.find(userId, jobId.toString())));
     }
 
     @GetMapping("/questions")
@@ -46,12 +55,14 @@ class PracticeController {
 
     @GetMapping("/practice/attempts")
     CareerResponse<PracticeService.AttemptPage> attempts(
-            @CareerUser String userId, @RequestParam(defaultValue = "1") int page) {
-        return CareerResponse.ok(service.attempts(userId, page));
+            @CareerUser String userId, @RequestParam(defaultValue = "1") int page,
+            @RequestParam(required = false) UUID jobId) {
+        return CareerResponse.ok(service.attempts(userId, page, jobId));
     }
 
     @GetMapping("/practice/wrong-questions")
-    CareerResponse<List<PracticeService.WrongQuestion>> wrongQuestions(@CareerUser String userId) {
-        return CareerResponse.ok(service.wrongQuestions(userId));
+    CareerResponse<List<PracticeService.WrongQuestion>> wrongQuestions(@CareerUser String userId,
+            @RequestParam(required = false) UUID jobId) {
+        return CareerResponse.ok(service.wrongQuestions(userId, jobId));
     }
 }

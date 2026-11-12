@@ -11,7 +11,7 @@ interface Props<T> {
   normalize: (values: T) => T
   onChange?: () => void
   children: ReactNode
-  render: (entry: T) => ReactNode
+  render: (entry: T & { id: string }) => ReactNode
 }
 
 export default function CareerRecordList<T extends object>({

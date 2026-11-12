@@ -1,10 +1,12 @@
-import { Col, Form, Input, Row, Space, Typography } from 'antd'
+import { Button, Col, Form, Input, Row, Space, Tag, Typography } from 'antd'
 import { careerApi, type JobInput } from '@/api/career'
 import CareerRecordList from './career/CareerRecordList'
+import { useCurrentJob } from './career/CurrentJob'
 
 const { Link, Paragraph, Text, Title } = Typography
 
 export default function JobCompanyPage() {
+  const target = useCurrentJob()
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
       <div>
@@ -14,6 +16,7 @@ export default function JobCompanyPage() {
       <CareerRecordList<JobInput>
         label="岗位"
         api={careerApi.jobs}
+        onChange={target.reload}
         defaults={() => ({ sourcedOn: new Date().toLocaleDateString('sv-SE') })}
         normalize={(values) => ({
           company: values.company.trim(),
@@ -23,6 +26,7 @@ export default function JobCompanyPage() {
           sourceName: values.sourceName.trim(),
           sourceUrl: values.sourceUrl?.trim() || null,
           sourcedOn: values.sourcedOn,
+          skills: values.skills?.trim() || null,
         })}
         render={(entry) => (
           <>
@@ -36,7 +40,10 @@ export default function JobCompanyPage() {
                 ? <Link href={entry.sourceUrl} target="_blank" rel="noopener noreferrer">{entry.sourceName}</Link>
                 : <Text>{entry.sourceName}</Text>}
               <Text type="secondary">记录于 {entry.sourcedOn}</Text>
+              {target.job?.id === entry.id ? <Tag color="processing">当前目标</Tag>
+                : <Button type="link" size="small" loading={target.saving} onClick={() => target.select(entry.id)}>设为当前目标</Button>}
             </Space>
+            {entry.skills && <Paragraph type="secondary">技能要求 · {entry.skills}</Paragraph>}
           </>
         )}
       >
@@ -55,6 +62,9 @@ export default function JobCompanyPage() {
         <Form.Item name="location" label="工作地点"><Input maxLength={160} /></Form.Item>
         <Form.Item name="description" label="岗位描述（JD）" rules={[{ required: true, whitespace: true }]}>
           <Input.TextArea rows={5} maxLength={40000} />
+        </Form.Item>
+        <Form.Item name="skills" label="已确认技能">
+          <Input maxLength={1000} placeholder="例如访谈、可用性测试、数据分析" />
         </Form.Item>
         <Row gutter={16}>
           <Col xs={24} sm={12}>

@@ -77,6 +77,75 @@ class CareerDataIntegrationTest {
     }
 
     @Test
+    void activeJobAndObjectivePracticeStayScopedToOwnerAndJob() throws Exception {
+        String first = createWorkflowJob();
+        String second = createWorkflowJob();
+        String active = JOBS + "/active";
+        String input = "{\"jobId\":\"" + first + "\"}";
+        mvc.perform(put(active).header("Authorization", access(other)).contentType("application/json").content(input))
+                .andExpect(status().isNotFound());
+        mvc.perform(put(active).header("Authorization", access(owner)).contentType("application/json").content(input))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.jobId").value(first));
+        mvc.perform(get(active).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.jobId").value(first));
+        String attempt = """
+                {"requestId":"%s","questionId":"%s","questionVersion":1,"answer":"A","jobId":"%s"}
+                """.formatted(UUID.randomUUID(), HASHCODE, first);
+        mvc.perform(post(ATTEMPTS).header("Authorization", access(other)).contentType("application/json").content(attempt))
+                .andExpect(status().isNotFound());
+        mvc.perform(post(ATTEMPTS).header("Authorization", access(owner)).contentType("application/json").content(attempt))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.jobId").value(first));
+        mvc.perform(post(ATTEMPTS).header("Authorization", access(owner)).contentType("application/json")
+                        .content(attempt.replace(first, second))).andExpect(status().isConflict());
+        mvc.perform(get(ATTEMPTS).param("jobId", first).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1));
+        mvc.perform(get(ATTEMPTS).param("jobId", second).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
+        mvc.perform(delete(JOBS + "/" + first).header("Authorization", access(owner))).andExpect(status().isOk());
+        mvc.perform(get(active).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.jobId").isEmpty());
+        mvc.perform(get(ATTEMPTS).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1));
+    }
+
+    @Test
+    void generatedQuestionsSupportAnUnseededRoleWithoutCrossingJobOrUser() throws Exception {
+        String job = savedId(JOBS, """
+                {"company":"山野观察","title":"湿地生态修复","description":"监测候鸟栖息地与水文条件",
+                 "skills":"水质采样","sourceName":"企业官网","sourcedOn":"2026-11-12"}
+                """);
+        String otherJob = createWorkflowJob();
+        String root = "/api/career/tasks";
+        String input = """
+                {"jobId":"%s","requestId":"%s"}
+                """.formatted(job, UUID.randomUUID());
+        mvc.perform(get("/api/career/recommendations").param("jobId", job).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.questions.length()").value(0))
+                .andExpect(jsonPath("$.data.notes.length()").value(0));
+        mvc.perform(post(root + "/training").header("Authorization", access(owner)).contentType("application/json")
+                        .content(input)).andExpect(status().isConflict());
+        String preparation = savedId(root + "/preparation", input);
+        jdbc.update("UPDATE career_task SET status = 'SUCCEEDED', result_json = ? WHERE id = ?", """
+                {"skills":["水质采样"],"openQuestions":[{"topic":"栖息地监测","prompt":"如何评估修复结果？",
+                    "rubric":["设置基线","说明采样间隔"]}]}
+                """, preparation);
+        mvc.perform(get(root).param("kind", "PREPARATION").param("jobId", otherJob).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(0));
+        mvc.perform(get(root + "/" + preparation).header("Authorization", access(other))).andExpect(status().isNotFound());
+        String answer = """
+                {"jobId":"%s","requestId":"%s","questionId":"%s-0","questionVersion":1,"answer":"记录水质基线"}
+                """.formatted(job, UUID.randomUUID(), preparation);
+        mvc.perform(post(root + "/interview").header("Authorization", access(owner)).contentType("application/json")
+                        .content(answer.replace(job, otherJob))).andExpect(status().isNotFound());
+        mvc.perform(post(root + "/interview").header("Authorization", access(owner)).contentType("application/json")
+                        .content(answer)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.interview.prompt").value("如何评估修复结果？"));
+        savedId(root + "/training", """
+                {"jobId":"%s","requestId":"%s","preparationId":"%s"}
+                """.formatted(job, UUID.randomUUID(), preparation));
+    }
+
+    @Test
     void trainingRequestIsDurableIdempotentAndOwnerScoped() throws Exception {
         String job = createWorkflowJob();
         createWorkflowFact(true);

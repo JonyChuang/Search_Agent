@@ -5,16 +5,31 @@ import type { Question } from './practice'
 type Response<T> = { code: number; message: string; data: T }
 type JobRequest = { jobId: string }
 
-export type TaskKind = 'TRAINING' | 'REVIEW' | 'INTERVIEW'
+export type TaskKind = 'TRAINING' | 'REVIEW' | 'INTERVIEW' | 'PREPARATION' | 'DISCOVERY'
+
+export interface OpenQuestion {
+  topic: string
+  prompt: string
+  rubric: string[]
+}
 
 export interface CareerTask {
   id: string
   kind: TaskKind
   status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
-  request: { questionVersion?: number }
+  request: { jobId?: string; questionVersion?: number }
   job: string
   interview: { prompt: string; gradingVersion: number; sourceUrl: string; answer: string } | null
-  result: { analysis?: string; questions?: Question[]; steps?: string[]; feedback?: string } | null
+  result: {
+    analysis?: string
+    questions?: (Pick<Question, 'id' | 'version' | 'prompt'> & { kind?: 'OPEN' })[]
+    openQuestions?: OpenQuestion[]
+    skills?: string[]
+    steps?: string[]
+    feedback?: string
+    sources?: { title: string; url: string; snippet: string }[]
+    searchedAt?: string
+  } | null
   error: string | null
   generation: number
   trainingStep?: 'FIND_QUESTIONS' | 'GENERATE_PLAN' | 'SAVE_PLAN' | 'COMPLETE' | null
@@ -71,9 +86,12 @@ async function post<T>(path: string, input?: object) {
 }
 
 export const careerWorkflow = {
-  tasks: (kind: TaskKind, page: number, signal: AbortSignal) =>
-    get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page }),
-  training: (input: JobRequest & { requestId: string; role: string }) =>
+  tasks: (kind: TaskKind, page: number, signal: AbortSignal, jobId?: string) =>
+    get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page, jobId }),
+  task: (id: string, signal: AbortSignal) => get<CareerTask>(`/career/tasks/${encodeURIComponent(id)}`, signal),
+  prepare: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/preparation', input),
+  discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
+  training: (input: JobRequest & { requestId: string; role?: string; preparationId?: string }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
   interview: (input: JobRequest & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>

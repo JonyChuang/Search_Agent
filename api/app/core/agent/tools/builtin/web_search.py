@@ -14,7 +14,7 @@ class _QueryInput(BaseModel):
     query: str = Field(..., description="检索的问题或关键词")
 
 
-async def _get_websearch_config(session, user_id):
+async def get_websearch_config(session, user_id):
     """取用户默认 websearch 配置（provider + 解密 key）；无则返回 None。"""
     from app.core.security import decrypt_secret
     from app.repositories.model_config_repository import ModelConfigRepository
@@ -27,7 +27,7 @@ async def _get_websearch_config(session, user_id):
 
 
 async def _build(ctx: ToolBuildContext) -> StructuredTool | None:
-    ws = await _get_websearch_config(ctx.session, ctx.user_id)
+    ws = await get_websearch_config(ctx.session, ctx.user_id)
     if not ws:
         # 未配置 websearch 模型 → 不构建该工具
         return None

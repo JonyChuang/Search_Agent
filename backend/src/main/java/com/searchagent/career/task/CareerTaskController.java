@@ -30,6 +30,16 @@ class CareerTaskController {
         return CareerResponse.ok(tasks.training(user, input));
     }
 
+    @PostMapping("/preparation")
+    CareerResponse<CareerTasks.Task> prepare(@CareerUser String user, @Valid @RequestBody CareerTasks.JobRequest input) {
+        return CareerResponse.ok(tasks.prepare(user, input));
+    }
+
+    @PostMapping("/discovery")
+    CareerResponse<CareerTasks.Task> discover(@CareerUser String user, @Valid @RequestBody CareerTasks.JobRequest input) {
+        return CareerResponse.ok(tasks.discover(user, input));
+    }
+
     @PostMapping("/review")
     CareerResponse<CareerTasks.Task> review(@CareerUser String user, @Valid @RequestBody CareerTasks.Review input) {
         return CareerResponse.ok(tasks.review(user, input));
@@ -42,8 +52,9 @@ class CareerTaskController {
 
     @GetMapping
     CareerResponse<CareerTasks.TaskPage> list(@CareerUser String user, @RequestParam String kind,
+            @RequestParam(required = false) UUID jobId,
             @RequestParam(defaultValue = "1") int page) {
-        return CareerResponse.ok(tasks.list(user, kind, page));
+        return CareerResponse.ok(tasks.list(user, kind, jobId, page));
     }
 
     @GetMapping("/{id}")

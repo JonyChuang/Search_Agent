@@ -10,23 +10,21 @@ export function roleLabel(role: string) {
   return roles[role] ?? role
 }
 
-export function practiceLink(questionId: string, version?: number) {
-  return `/career/practice?question=${encodeURIComponent(questionId)}${version ? `&version=${version}` : ""}`
+export function practiceLink(questionId: string, version?: number, jobId?: string) {
+  const params = new URLSearchParams({ question: questionId })
+  if (version) params.set('version', String(version))
+  if (jobId) params.set('job', jobId)
+  return `/career/practice?${params}`
 }
 
-function Questions({ role }: { role?: string }) {
-  const load = useCallback((signal: AbortSignal) => practiceApi.questions(role, signal), [role])
-  const { data, error, retry } = useCareerQuery(load)
-  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
-  if (!data) return <Spin />
-
+export function PracticeQuestionList({ questions, jobId }: { questions: Awaited<ReturnType<typeof practiceApi.questions>>; jobId?: string }) {
   return (
     <List
-      dataSource={data}
+      dataSource={questions}
       rowKey="id"
       locale={{ emptyText: '这个岗位方向暂时没有题目' }}
       renderItem={(question) => (
-        <List.Item actions={[<Link key="practice" to={practiceLink(question.id)}>开始作答</Link>]}>
+        <List.Item actions={[<Link key="practice" to={practiceLink(question.id, question.version, jobId)}>开始作答</Link>]}>
           <List.Item.Meta
             title={question.prompt}
             description={
@@ -44,6 +42,15 @@ function Questions({ role }: { role?: string }) {
       )}
     />
   )
+}
+
+function Questions({ role }: { role?: string }) {
+  const load = useCallback((signal: AbortSignal) => practiceApi.questions(role, signal), [role])
+  const { data, error, retry } = useCareerQuery(load)
+  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
+  if (!data) return <Spin />
+
+  return <PracticeQuestionList questions={data} />
 }
 
 export default function QuestionCatalog() {

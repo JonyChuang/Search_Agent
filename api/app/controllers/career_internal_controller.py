@@ -9,7 +9,13 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.core.exceptions import BizError
-from app.services.career_task_service import CareerRun, InvalidCareerToolResponse, MissingCareerTools, execute
+from app.services.career_task_service import (
+    CareerRun,
+    InvalidCareerToolResponse,
+    MissingCareerSearch,
+    MissingCareerTools,
+    execute,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +48,8 @@ async def run_task(run: CareerRun) -> dict:
         return await execute(run)
     except MissingCareerTools as error:
         raise HTTPException(412, "默认对话模型未启用工具调用") from error
+    except MissingCareerSearch as error:
+        raise HTTPException(424, "未配置联网搜索") from error
     except InvalidCareerToolResponse as error:
         raise HTTPException(422, "模型未按工具格式返回结果") from error
     except BizError as error:

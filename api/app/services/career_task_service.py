@@ -12,6 +12,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from app.config import settings
+from app.core.agent.tools.builtin.web_search import get_websearch_config
+from app.core.agent.web_search import web_search_structured
 from app.core.llm.chat_model import build_default_chat_model, supports_function_call
 from app.db.postgres import SessionLocal
 from app.services.skill_builtins import get_builtin_skill
@@ -23,7 +25,7 @@ class CareerRun(BaseModel):
     id: UUID
     lease: UUID
     userId: UUID
-    kind: Literal["TRAINING", "REVIEW", "INTERVIEW"]
+    kind: Literal["TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"]
     context: dict
     trainingCatalog: list[dict] | None = None
 
@@ -59,6 +61,21 @@ class CareerEvaluation(BaseModel):
     feedback: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=6000)]
 
 
+class OpenQuestion(BaseModel):
+    topic: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+    prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    rubric: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = Field(
+        min_length=1, max_length=5,
+    )
+
+
+class JobPreparation(BaseModel):
+    skills: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]] = Field(
+        min_length=1, max_length=8,
+    )
+    openQuestions: list[OpenQuestion] = Field(min_length=1, max_length=5)
+
+
 class MissingCareerTools(Exception):
     """默认模型没有启用工具调用。"""
 
@@ -67,8 +84,14 @@ class InvalidCareerToolResponse(ValueError):
     """模型未返回可执行的工具调用。"""
 
 
+class MissingCareerSearch(Exception):
+    """当前账号没有配置联网搜索。"""
+
+
 async def execute(run: CareerRun) -> dict:
     async with asyncio.timeout(85):
+        if run.kind == "DISCOVERY":
+            return await discover(run)
         async with SessionLocal() as session:
             model, config = await build_default_chat_model(
                 session, run.userId, temperature=0.2, streaming=False, deepseek_tool_mode=True,
@@ -79,9 +102,22 @@ async def execute(run: CareerRun) -> dict:
         if run.kind == "TRAINING":
             await train(run, model)
             return {"status": "UP"}
-        if run.kind == "INTERVIEW":
-            skill = get_builtin_skill("career_interview_review")
-            instructions = skill["prompt"]
+        schema = CareerEvaluation
+        if run.kind == "PREPARATION":
+            schema = JobPreparation
+            instructions = (
+                "从目标岗位描述和已确认的岗位技能中提炼能力标签，生成三道与实际职责相关的中文开放式模拟面试题，"
+                "每题给出明确、可以据此评价回答的评分要点。岗位覆盖不限于技术类。"
+                "只根据输入的岗位要求推断，不能声称题目是公司面试真题。"
+            )
+        elif run.kind == "INTERVIEW":
+            if run.context.get("question", {}).get("kind") == "OPEN":
+                instructions = (
+                    "你是当前岗位的面试教练。按题目的 rubric 逐项评价用户实际回答，指出回答中的依据、"
+                    "遗漏与可执行的改进建议，保留合理的其他做法。不要虚构用户经历或给出录用结论。"
+                )
+            else:
+                instructions = get_builtin_skill("career_interview_review")["prompt"]
         else:
             instructions = (
                 "你是求职复习教练。用给出的练习记录和解析解释掌握情况与薄弱点，"
@@ -94,12 +130,30 @@ async def execute(run: CareerRun) -> dict:
         ]
         started = perf_counter()
         result = await model.with_structured_output(
-            CareerEvaluation, method="function_calling", include_raw=True,
+            schema, method="function_calling", include_raw=True,
         ).ainvoke(messages)
         log_model_step(run, run.kind.lower(), result["raw"], started)
-        if result["parsing_error"] is not None:
-            raise result["parsing_error"]
+        if result["parsed"] is None:
+            raise InvalidCareerToolResponse("Invalid structured result") from result["parsing_error"]
         return result["parsed"].model_dump()
+
+
+async def discover(run: CareerRun) -> dict:
+    async with SessionLocal() as session:
+        config = await get_websearch_config(session, run.userId)
+    if config is None:
+        raise MissingCareerSearch()
+    job = run.context["job"]
+    results = await web_search_structured(*config, f'{job["company"]} {job["title"]} 面试经验 面经', top_k=8)
+    sources = []
+    urls = set()
+    for entry in results:
+        url = entry["url"]
+        if not entry["title"] or not url or len(url) > 2048 or url in urls:
+            continue
+        urls.add(url)
+        sources.append({"title": entry["title"][:200], "url": url, "snippet": entry["snippet"][:650]})
+    return {"sources": sources[:8]}
 
 
 async def train(run: CareerRun, model: ChatOpenAI) -> None:

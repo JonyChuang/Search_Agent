@@ -18,9 +18,11 @@ const trainingStepLabels = {
   COMPLETE: '计划已保存',
 }
 
-export default function TaskHistory({ kind, render }: { kind: TaskKind; render?: (task: CareerTask) => ReactNode }) {
+export default function TaskHistory({ kind, jobId, render }: {
+  kind: TaskKind; jobId?: string; render?: (task: CareerTask) => ReactNode
+}) {
   const [page, setPage] = useState(1)
-  const load = useCallback((signal: AbortSignal) => careerWorkflow.tasks(kind, page, signal), [kind, page])
+  const load = useCallback((signal: AbortSignal) => careerWorkflow.tasks(kind, page, signal, jobId), [kind, page, jobId])
   const { data, error, retry, setData } = useCareerQuery(load)
   const active = data?.items.some((task) => task.status === 'QUEUED' || task.status === 'RUNNING')
   const action = useCareerAction()

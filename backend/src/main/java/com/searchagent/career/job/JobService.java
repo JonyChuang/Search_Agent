@@ -26,6 +26,24 @@ public class JobService {
         return mapper.list(userId);
     }
 
+    String active(String userId) {
+        return mapper.active(userId);
+    }
+
+    @Transactional
+    String selectActive(String userId, UUID jobId) {
+        if (jobId == null) {
+            mapper.clearActive(userId);
+            return null;
+        }
+        String id = jobId.toString();
+        mapper.selectActive(userId, id);
+        if (!id.equals(mapper.active(userId))) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "岗位不存在");
+        }
+        return id;
+    }
+
     public Entry find(String userId, String id) {
         Entry entry = mapper.find(userId, id);
         if (entry == null) {
@@ -79,11 +97,12 @@ public class JobService {
             @NotBlank(message = "请输入岗位描述") @Size(max = 40000, message = "岗位描述最多 40000 字") String description,
             @NotBlank(message = "请填写招聘来源") @Size(max = 160, message = "招聘来源最多 160 字") String sourceName,
             @Size(max = 2048, message = "来源链接最多 2048 字符") String sourceUrl,
-            @NotNull(message = "请填写来源记录日期") LocalDate sourcedOn) {
+            @NotNull(message = "请填写来源记录日期") LocalDate sourcedOn,
+            @Size(max = 1000) String skills) {
     }
 
     public record Entry(
             String id, String company, String title, String location,
-            String description, String sourceName, String sourceUrl, LocalDate sourcedOn) {
+            String description, String sourceName, String sourceUrl, LocalDate sourcedOn, String skills) {
     }
 }

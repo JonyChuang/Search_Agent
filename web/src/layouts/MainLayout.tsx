@@ -33,6 +33,7 @@ import { agentTaskApi } from '@/api/agentTask'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import MusicPlayer from '@/components/MusicPlayer'
 import logo from '@/images/logo.png'
+import { CurrentJobProvider, CurrentJobSelect, useCurrentJob } from '@/pages/career/CurrentJob'
 
 const { Sider, Content, Header } = Layout
 
@@ -111,8 +112,15 @@ function useIsMobile() {
 }
 
 export default function MainLayout() {
+  const userId = useAuthStore((state) => state.user?.id)
+  return <CurrentJobProvider key={userId}><MainLayoutContent /></CurrentJobProvider>
+}
+
+function MainLayoutContent() {
   const navigate = useNavigate()
   const location = useLocation()
+  const { job } = useCurrentJob()
+  const careerPage = location.pathname === '/' || location.pathname.startsWith('/career/')
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const isMobile = useIsMobile()
@@ -508,7 +516,8 @@ export default function MainLayout() {
               padding: isMobile ? 14 : 24,
             }}
           >
-            <Outlet />
+            {careerPage && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
+            <Outlet key={careerPage ? job?.id : undefined} />
           </Content>
         </Layout>
         {immersive && <MusicPlayer />}

@@ -58,8 +58,10 @@ import { personaApi } from '@/api/personas'
 import { agentConfigApi } from '@/api/agentConfig'
 import { authApi } from '@/api/auth'
 import { useSkillStore } from '@/stores/skillStore'
+import { CurrentJobSelect, useCurrentJob } from './career/CurrentJob'
 
 export default function ChatPage() {
+  const { job } = useCurrentJob()
   const [params, setParams] = useSearchParams()
   const [conversations, setConversations] = useState<Conversation[]>([])
   // 折叠的日期分组（key 集合）；默认仅展开「今天」，其余折叠
@@ -917,6 +919,9 @@ export default function ChatPage() {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
+        <div style={{ padding: '12px 16px 0' }}>
+          <CurrentJobSelect />
+        </div>
         {dragOver && (
           <div className="chat-drop-overlay">
             <div className="chat-drop-inner">
@@ -1039,6 +1044,13 @@ export default function ChatPage() {
                 >
                   <CloseOutlined />
                 </button>
+              )}
+              {job && (
+                <button className="chat-quick-prompt" disabled={sending} onClick={() => {
+                  const context = [`目标岗位：${job.company} · ${job.title}`, `岗位描述：${job.description}`]
+                  if (job.skills) context.push(`已确认技能：${job.skills}`)
+                  fillInput([...context, input || '请帮我梳理这个岗位的面试准备重点。'].join('\n'))
+                }}>引用当前岗位</button>
               )}
               {/* 快捷开场提问：填进输入框待补充，不直接发送 */}
               {activeSkill?.config?.quick_prompts?.map((qp, i) => (

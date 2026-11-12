@@ -3,6 +3,7 @@ import { Alert, Button, Card, Empty, Form, Input, List, Select, Space, Spin, Tag
 import { Link, useSearchParams } from 'react-router-dom'
 import { careerApi } from '@/api/career'
 import { applicationStages, careerWorkflow, type Application, type Resume, type Stage } from '@/api/careerWorkflow'
+import { useCurrentJob } from './career/CurrentJob'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
 
@@ -46,7 +47,8 @@ function DraftForm({ jobId, draft, resumes, onSave }: {
 
 export function ApplicationAssistantPage() {
   const [params, setParams] = useSearchParams()
-  const jobId = params.get('job') ?? undefined
+  const { job: currentJob } = useCurrentJob()
+  const jobId = currentJob?.id ?? params.get('job') ?? undefined
   const jobs = useCareerQuery(careerApi.jobs.list)
   const drafts = useCareerQuery(careerWorkflow.applications)
   const resumes = useCareerQuery(careerWorkflow.resumes)
@@ -69,8 +71,9 @@ export function ApplicationAssistantPage() {
           {[jobs, drafts, resumes].filter((query) => query.error).map((query, index) => (
             <Alert key={index} type="error" message={query.error} action={<Button onClick={query.retry}>重试</Button>} />
           ))}
-          <Select aria-label="选择申请岗位" value={jobId} options={options} placeholder="选择目标岗位"
-            onChange={(value) => setParams({ job: value })} />
+          {currentJob ? <Text strong>{currentJob.company} · {currentJob.title}</Text> :
+            <Select aria-label="选择申请岗位" value={jobId} options={options} placeholder="选择目标岗位"
+              onChange={(value) => setParams({ job: value })} />}
           <Space wrap>
             <Link to="/career/jobs">管理岗位</Link>
             <Link to="/career/resume">生成简历版本</Link>
@@ -129,9 +132,10 @@ function StageEditor({ entry, onSave }: { entry: Application; onSave: (saved: Ap
 }
 
 export function ApplicationBoardPage() {
+  const { job } = useCurrentJob()
   const entries = useCareerQuery(careerWorkflow.applications)
   const [stage, setStage] = useState<Stage>()
-  const visible = entries.data?.filter((item) => !stage || item.stage === stage)
+  const visible = entries.data?.filter((item) => (!stage || item.stage === stage) && (!job || item.jobId === job.id))
 
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>

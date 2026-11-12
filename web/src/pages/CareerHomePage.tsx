@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import {
   ArrowDownOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckOutlined,
   CommentOutlined, CompassOutlined, FileDoneOutlined, FileSearchOutlined, FileTextOutlined,
@@ -10,6 +10,7 @@ import { applicationStages, careerWorkflow, type Stage } from '@/api/careerWorkf
 import { modelApi } from '@/api/models'
 import { practiceApi } from '@/api/practice'
 import { useAuthStore } from '@/stores/authStore'
+import { useCurrentJob } from './career/CurrentJob'
 import { useCareerQuery } from './career/useCareerQuery'
 import styles from './CareerHomePage.module.css'
 
@@ -34,10 +35,6 @@ const features = [
 
 async function loadChatModels(signal: AbortSignal) {
   return (await modelApi.list('chat', signal)).data
-}
-
-function loadRecentPractice(signal: AbortSignal) {
-  return practiceApi.attempts(1, signal)
 }
 
 function HeroArtwork() {
@@ -75,34 +72,42 @@ function OverviewCard({ title, eyebrow, icon, children }: {
 
 export default function CareerHomePage() {
   const nickname = useAuthStore((state) => state.user?.nickname)
+  const { job, jobs } = useCurrentJob()
+  const jobId = job?.id
   const experiences = useCareerQuery(careerApi.experiences.list)
-  const jobs = useCareerQuery(careerApi.jobs.list)
   const models = useCareerQuery(loadChatModels)
+  const loadRecentPractice = useCallback((signal: AbortSignal) => practiceApi.attempts(1, signal, jobId), [jobId])
   const practice = useCareerQuery(loadRecentPractice)
+  const loadRecentInterviews = useCallback((signal: AbortSignal) =>
+    jobId ? careerWorkflow.tasks('INTERVIEW', 1, signal, jobId) : Promise.resolve(undefined), [jobId])
+  const interviews = useCareerQuery(loadRecentInterviews)
   const applications = useCareerQuery(careerWorkflow.applications)
+  const visibleApplications = applications.data?.filter((entry) => !jobId || entry.jobId === jobId)
 
   const confirmed = experiences.data?.filter((entry) => entry.confirmed).length
   const model = models.data?.find((entry) => entry.is_default) ?? models.data?.[0]
   const attempts = practice.data?.items
   const correct = attempts?.filter((attempt) => attempt.correct).length ?? 0
+  const completedInterviews = interviews.data?.items.filter((task) => task.status === 'SUCCEEDED').length ?? 0
   const distribution = stages.map((stage) => ({
-    stage, count: applications.data?.filter((entry) => entry.stage === stage).length ?? 0,
+    stage, count: visibleApplications?.filter((entry) => entry.stage === stage).length ?? 0,
   })).filter(({ count }) => count > 0)
 
   const steps = [
     { title: '确认一段经历', copy: '整理项目、科研或实习经历，留作简历依据。', to: '/career/resume',
       action: '整理经历', done: confirmed === undefined ? undefined : confirmed > 0, error: experiences.error },
-    { title: '保存目标岗位', copy: '记录一份感兴趣的 JD，明确准备方向。', to: '/career/jobs',
-      action: '添加岗位', done: jobs.data && jobs.data.length > 0, error: jobs.error },
+    { title: '选择目标岗位', copy: '选中一份岗位，查看匹配的面经和练习。', to: '/career/jobs',
+      action: jobs?.length ? '选择岗位' : '添加岗位', done: jobs && !!job },
     { title: '配置 AI 教练', copy: '启用对话模型的工具调用，开始定向训练。', to: '/settings/models',
       action: '配置模型', done: models.data && !!model?.capability?.includes('function_call'), error: models.error },
-    { title: '完成首道练习', copy: '选一道岗位方向的题，看看自己的掌握情况。', to: '/career/practice',
-      action: '开始练习', done: attempts && attempts.length > 0, error: practice.error },
+    { title: '完成首道练习', copy: '选一道岗位方向的题，看看自己的掌握情况。', to: job ? '/career/questions' : '/career/practice',
+      action: '开始练习', done: completedInterviews > 0 || (attempts && (!job || interviews.data) && attempts.length > 0),
+      error: practice.error || interviews.error },
   ]
   const next = steps.find((step) => step.done === false)
   const knownSteps = steps.every((step) => step.done !== undefined)
   const completed = steps.filter((step) => step.done).length
-  const failedQueries = [experiences, jobs, models, practice, applications].filter((query) => query.error)
+  const failedQueries = [experiences, models, practice, interviews, applications].filter((query) => query.error)
 
   return (
     <div className={styles.home}>
@@ -110,7 +115,7 @@ export default function CareerHomePage() {
         <div className={styles.heroCopy}>
           <div className={styles.heroLabel}><CompassOutlined /> Search Agent <span /> 求职工作台</div>
           <h1>求职总览</h1>
-          <p>{nickname?.trim() ? `你好，${nickname.trim()}。` : ''}把目标岗位变成具体的准备计划。从整理经历、练习面试到跟进投递，每一步都有记录。</p>
+          <p>{job ? `当前准备 ${job.company} · ${job.title}` : `${nickname?.trim() ? `你好，${nickname.trim()}。` : ''}把目标岗位变成具体的准备计划。从整理经历、练习面试到跟进投递，每一步都有记录。`}</p>
           <div className={styles.heroActions}>
             <Link className={styles.primary} to={next?.to ?? '/career/plan'}>{next?.action ?? '查看训练计划'} <ArrowRightOutlined /></Link>
             <a className={styles.secondary} href="#career-features">浏览功能 <ArrowDownOutlined /></a>
@@ -142,11 +147,11 @@ export default function CareerHomePage() {
 
       <section aria-labelledby="career-progress-title">
         <div className={`${styles.sectionHeading} ${styles.outerHeading}`}>
-          <div><h2 id="career-progress-title">我的求职进展</h2><p>根据你的练习和投递记录更新。</p></div>
+          <div><h2 id="career-progress-title">我的求职进展</h2><p>{job ? `显示 ${job.title} 的练习和投递记录。` : '显示全部练习和投递记录。'}</p></div>
           {failedQueries.length > 0 && <button type="button" className={styles.retry} onClick={() => failedQueries.forEach(({ retry }) => retry())}><ReloadOutlined /> 重试读取数据</button>}
         </div>
         <div className={styles.overviewGrid}>
-          <OverviewCard title="最近练习" eyebrow="最近 20 次作答" icon={<AuditOutlined />}>
+          <OverviewCard title="最近练习" eyebrow={job ? '当前岗位的刷题和面试' : '最近 20 次作答'} icon={<AuditOutlined />}>
             {attempts?.length ? (
               <>
                 <div className={styles.chartTotal}><strong>{Math.round(correct / attempts.length * 100)}%</strong><span>正确率 · {attempts.length} 次作答</span></div>
@@ -155,20 +160,26 @@ export default function CareerHomePage() {
                 </div>
                 <div className={styles.legend}><span><i className={styles.correct} />答对 <b>{correct}</b></span><span><i className={styles.incorrect} />答错 <b>{attempts.length - correct}</b></span></div>
               </>
-            ) : <p className={styles.chartEmpty} role="status">{practice.error ? '练习记录暂时无法读取。' : attempts ? '还没有练习记录，完成第一道题后可查看表现。' : '正在读取练习记录…'}</p>}
+            ) : !completedInterviews && <p className={styles.chartEmpty} role="status">
+              {practice.error || interviews.error ? '练习记录暂时无法读取。'
+                : attempts && (!job || interviews.data) ? '还没有练习记录，完成第一道题后可查看表现。' : '正在读取练习记录…'}
+            </p>}
+            {completedInterviews > 0 && <Link className={styles.chartLink} to="/career/interviews">
+              最近完成 {completedInterviews} 次模拟面试 <ArrowRightOutlined />
+            </Link>}
             <Link className={styles.chartLink} to="/career/practice">前往刷题练习 <ArrowRightOutlined /></Link>
           </OverviewCard>
           <OverviewCard title="投递阶段" eyebrow="按当前阶段统计，含草稿" icon={<FundOutlined />}>
-            {applications.data?.length ? (
+            {visibleApplications?.length ? (
               <>
-                <div className={styles.chartTotal}><strong>{applications.data.length}</strong><span>条申请记录</span></div>
+                <div className={styles.chartTotal}><strong>{visibleApplications.length}</strong><span>条申请记录</span></div>
                 <div className={styles.stageBar} aria-hidden="true">
                   {distribution.map(({ stage, count }) => <i key={stage} style={{ flex: count, backgroundColor: stageColors[stage] }} />)}
                 </div>
                 <div className={styles.legend}>{distribution.map(({ stage, count }) => <span key={stage}><i style={{ backgroundColor: stageColors[stage] }} />{applicationStages[stage]} <b>{count}</b></span>)}</div>
               </>
             ) : <p className={styles.chartEmpty} role="status">{applications.error ? '申请记录暂时无法读取。' : applications.data ? '还没有申请记录，可以先为目标岗位保存一份网申草稿。' : '正在读取申请记录…'}</p>}
-            {applications.data?.length ? <Link className={styles.chartLink} to="/career/applications">查看投递看板 <ArrowRightOutlined /></Link> : <Link className={styles.chartLink} to="/career/apply">前往网申助手 <ArrowRightOutlined /></Link>}
+            {visibleApplications?.length ? <Link className={styles.chartLink} to="/career/applications">查看投递看板 <ArrowRightOutlined /></Link> : <Link className={styles.chartLink} to="/career/apply">前往网申助手 <ArrowRightOutlined /></Link>}
           </OverviewCard>
         </div>
       </section>

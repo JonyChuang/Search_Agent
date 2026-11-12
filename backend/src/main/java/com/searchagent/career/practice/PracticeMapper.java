@@ -21,7 +21,7 @@ interface PracticeMapper {
                    q.prompt, a.answer, a.correct, q.correct_answer,
                    ELT(FIELD(a.answer, 'A', 'B', 'C', 'D'), q.option_a, q.option_b, q.option_c, q.option_d) AS answer_text,
                    ELT(FIELD(q.correct_answer, 'A', 'B', 'C', 'D'), q.option_a, q.option_b, q.option_c, q.option_d) AS correct_answer_text,
-                   q.explanation, a.submitted_at
+                   q.explanation, a.submitted_at, a.job_id
             FROM career_practice_attempt a
             JOIN career_question_version q ON q.id = a.question_id AND q.version = a.question_version
             WHERE a.user_id = #{userId}
@@ -53,12 +53,12 @@ interface PracticeMapper {
 
     @Insert("""
             INSERT INTO career_practice_attempt
-                (user_id, request_id, question_id, question_version, grading_version, answer, correct)
+                (user_id, request_id, question_id, question_version, grading_version, answer, correct, job_id)
             VALUES (#{userId}, #{requestId}, #{submission.questionId}, #{submission.questionVersion},
-                    #{gradingVersion}, #{submission.answer}, #{correct})
+                    #{gradingVersion}, #{submission.answer}, #{correct}, #{jobId,jdbcType=CHAR})
             ON DUPLICATE KEY UPDATE sequence_id = sequence_id
             """)
-    void saveAttempt(@Param("userId") String userId, @Param("requestId") String requestId,
+    void saveAttempt(@Param("userId") String userId, @Param("requestId") String requestId, @Param("jobId") String jobId,
             @Param("submission") PracticeService.Submission submission,
             @Param("gradingVersion") int gradingVersion, @Param("correct") boolean correct);
 
@@ -79,14 +79,18 @@ interface PracticeMapper {
             <foreach item="ref" collection="refs" open="(" separator="," close=")">
                 (#{ref.id}, #{ref.version})
             </foreach>
+            AND (a.job_id = #{jobId} OR (#{includeUnscoped} = TRUE AND a.job_id IS NULL))
             ORDER BY a.sequence_id DESC LIMIT 20
             </script>
             """)
-    List<PracticeService.Attempt> feedback(@Param("userId") String userId, @Param("refs") List<PracticeService.QuestionVersion> refs);
+    List<PracticeService.Attempt> feedback(@Param("userId") String userId,
+            @Param("refs") List<PracticeService.QuestionVersion> refs, @Param("jobId") String jobId,
+            @Param("includeUnscoped") boolean includeUnscoped);
 
-    @Select(ATTEMPT_SELECT + " ORDER BY a.sequence_id DESC LIMIT #{limit} OFFSET #{offset}")
+    @Select(ATTEMPT_SELECT + " AND (#{jobId} IS NULL OR a.job_id = #{jobId}) ORDER BY a.sequence_id DESC LIMIT #{limit} OFFSET #{offset}")
     List<PracticeService.Attempt> attempts(
-            @Param("userId") String userId, @Param("limit") int limit, @Param("offset") long offset);
+            @Param("userId") String userId, @Param("jobId") String jobId,
+            @Param("limit") int limit, @Param("offset") long offset);
 
     @Select("""
             WITH latest AS (
@@ -94,7 +98,7 @@ interface PracticeMapper {
                        ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY sequence_id DESC) AS position_in_question,
                        SUM(CASE WHEN correct = FALSE THEN 1 ELSE 0 END) OVER (PARTITION BY question_id) AS wrong_count
                 FROM career_practice_attempt
-                WHERE user_id = #{userId}
+                WHERE user_id = #{userId} AND (#{jobId} IS NULL OR job_id = #{jobId})
             )
             SELECT q.id AS question_id, q.prompt, q.topic, latest.wrong_count, latest.correct AS reviewed
             FROM latest
@@ -102,5 +106,5 @@ interface PracticeMapper {
             WHERE latest.position_in_question = 1 AND latest.wrong_count > 0
             ORDER BY latest.correct, latest.sequence_id DESC
             """)
-    List<PracticeService.WrongQuestion> wrongQuestions(String userId);
+    List<PracticeService.WrongQuestion> wrongQuestions(@Param("userId") String userId, @Param("jobId") String jobId);
 }

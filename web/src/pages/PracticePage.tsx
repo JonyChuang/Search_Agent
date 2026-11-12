@@ -3,7 +3,8 @@ import { Alert, Button, Card, Collapse, List, Radio, Space, Spin, Tabs, Tag, Typ
 import { Link, useSearchParams } from 'react-router-dom'
 import { practiceApi, type Attempt, type Question, type Submission } from '@/api/practice'
 import { useAuthStore } from '@/stores/authStore'
-import QuestionCatalog, { practiceLink, roleLabel } from './career/QuestionCatalog'
+import QuestionCatalog, { PracticeQuestionList, practiceLink, roleLabel } from './career/QuestionCatalog'
+import { useCurrentJob } from './career/CurrentJob'
 import { useCareerQuery } from './career/useCareerQuery'
 
 const { Paragraph, Text, Title } = Typography
@@ -21,7 +22,7 @@ function Feedback({ attempt }: { attempt: Attempt }) {
   )
 }
 
-function AnswerForm({ question, storageKey }: { question: Question; storageKey: string }) {
+function AnswerForm({ question, storageKey, jobId }: { question: Question; storageKey: string; jobId?: string }) {
   const [pending, setPending] = useState<Submission | undefined>(() => {
     const saved = sessionStorage.getItem(storageKey)
     return saved ? JSON.parse(saved) as Submission : undefined
@@ -41,6 +42,7 @@ function AnswerForm({ question, storageKey }: { question: Question; storageKey: 
         questionId: question.id,
         questionVersion: question.version,
         answer,
+        jobId,
       }
       sessionStorage.setItem(storageKey, JSON.stringify(submission))
       setPending(submission)
@@ -89,7 +91,7 @@ function AnswerForm({ question, storageKey }: { question: Question; storageKey: 
   )
 }
 
-function SelectedQuestion({ id, version }: { id: string; version?: string }) {
+function SelectedQuestion({ id, version, jobId }: { id: string; version?: string; jobId?: string }) {
   const userId = useAuthStore((state) => state.user?.id)
   const load = useCallback((signal: AbortSignal) => practiceApi.question(id, signal, version), [id, version])
   const { data, error, retry } = useCareerQuery(load)
@@ -102,12 +104,13 @@ function SelectedQuestion({ id, version }: { id: string; version?: string }) {
     )
   }
   if (!data || !userId) return <Spin />
-  const storageKey = `career-attempt:${userId}:${data.id}:${data.version}`
-  return <AnswerForm key={storageKey} storageKey={storageKey} question={data} />
+  const storageKey = `career-attempt:${userId}:${data.id}:${data.version}${jobId ? `:${jobId}` : ''}`
+  return <AnswerForm key={storageKey} storageKey={storageKey} question={data} jobId={jobId} />
 }
 
-function WrongQuestions() {
-  const { data, error, retry } = useCareerQuery(practiceApi.wrongQuestions)
+function WrongQuestions({ jobId }: { jobId?: string }) {
+  const load = useCallback((signal: AbortSignal) => practiceApi.wrongQuestions(signal, jobId), [jobId])
+  const { data, error, retry } = useCareerQuery(load)
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
   if (!data) return <Spin />
 
@@ -133,8 +136,8 @@ function WrongQuestions() {
   )
 }
 
-function HistoryPage({ page, onPage }: { page: number; onPage: (page: number) => void }) {
-  const load = useCallback((signal: AbortSignal) => practiceApi.attempts(page, signal), [page])
+function HistoryPage({ page, onPage, jobId }: { page: number; onPage: (page: number) => void; jobId?: string }) {
+  const load = useCallback((signal: AbortSignal) => practiceApi.attempts(page, signal, jobId), [page, jobId])
   const { data, error, retry } = useCareerQuery(load)
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
   if (!data) return <Spin />
@@ -160,11 +163,26 @@ function HistoryPage({ page, onPage }: { page: number; onPage: (page: number) =>
   )
 }
 
+function JobPractice({ jobId }: { jobId: string }) {
+  const load = useCallback((signal: AbortSignal) => practiceApi.recommendations(jobId, signal), [jobId])
+  const { data, error, retry } = useCareerQuery(load)
+  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
+  if (!data) return <Spin />
+  return (
+    <>
+      <PracticeQuestionList questions={data.questions} jobId={jobId} />
+      <Link to="/career/questions">查看公开题库和岗位模拟题</Link>
+    </>
+  )
+}
+
 export default function PracticePage() {
   const [params, setParams] = useSearchParams()
+  const { job } = useCurrentJob()
   const [page, setPage] = useState(1)
   const version = params.get('version') ?? undefined
-  const question = params.get('question')
+  const linkedJob = params.get('job') ?? undefined
+  const question = job && linkedJob && job.id !== linkedJob ? null : params.get('question')
   const tab = params.get('tab')
   const activeTab = tab === 'wrong' || tab === 'history' ? tab : 'practice'
 
@@ -186,10 +204,12 @@ export default function PracticePage() {
             {
               key: 'practice',
               label: '选题作答',
-              children: question ? <SelectedQuestion key={`${question}:${version}`} id={question} version={version} /> : <QuestionCatalog />,
+              children: question
+                ? <SelectedQuestion key={`${question}:${version}`} id={question} version={version} jobId={job?.id ?? linkedJob} />
+                : job ? <JobPractice jobId={job.id} /> : <QuestionCatalog />,
             },
-            { key: 'wrong', label: '错题本', children: <WrongQuestions /> },
-            { key: 'history', label: '练习记录', children: <HistoryPage key={page} page={page} onPage={setPage} /> },
+            { key: 'wrong', label: '错题本', children: <WrongQuestions jobId={job?.id} /> },
+            { key: 'history', label: '练习记录', children: <HistoryPage key={page} page={page} onPage={setPage} jobId={job?.id} /> },
           ]}
         />
       </Card>

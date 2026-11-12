@@ -29,6 +29,7 @@ export interface JobInput {
   sourceName: string
   sourceUrl?: string | null
   sourcedOn: string
+  skills?: string | null
 }
 
 export interface CareerRecords<T> {
@@ -66,4 +67,12 @@ export const careerApi = {
   },
   experiences: records<ExperienceInput>('/career/experiences'),
   jobs: records<JobInput>('/career/jobs'),
+  activeJob: async (signal?: AbortSignal) => {
+    const { data } = await client.get<unknown, Response<{ jobId: string | null }>>('/career/jobs/active', { signal })
+    return data
+  },
+  selectJob: async (jobId: string | null) => {
+    const { data } = await client.put<unknown, Response<{ jobId: string | null }>>('/career/jobs/active', { jobId })
+    return data
+  },
 }

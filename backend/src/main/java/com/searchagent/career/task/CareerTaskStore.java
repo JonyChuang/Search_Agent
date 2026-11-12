@@ -24,11 +24,11 @@ class CareerTaskStore {
         this.json = json;
     }
 
-    Row insert(String user, UUID requestId, String kind, JsonNode request, JsonNode context) {
+    Row insert(String user, UUID requestId, String kind, String jobId, JsonNode request, JsonNode context) {
         db.sql("""
-                INSERT INTO career_task (id, user_id, request_id, kind, request_json, context_json)
-                VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id
-                """).params(UUID.randomUUID().toString(), user, requestId.toString(), kind,
+                INSERT INTO career_task (id, user_id, request_id, kind, job_id, request_json, context_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE id = id
+                """).params(UUID.randomUUID().toString(), user, requestId.toString(), kind, jobId,
                 request.toString(), context.toString()).update();
         return byRequest(user, requestId).orElseThrow();
     }
@@ -43,11 +43,24 @@ class CareerTaskStore {
                 .params(user, id.toString()).query(this::row).optional();
     }
 
-    List<Row> list(String user, String kind, long offset) {
+    List<Row> list(String user, String kind, String jobId, long offset) {
         return db.sql("""
-                SELECT * FROM career_task WHERE user_id = ? AND kind = ?
-                ORDER BY created_at DESC, id DESC LIMIT 21 OFFSET ?
-                """).params(user, kind, offset).query(this::row).list();
+                SELECT * FROM career_task WHERE user_id = :user AND kind = :kind
+                    AND (:jobId IS NULL OR job_id = :jobId)
+                ORDER BY created_at DESC, id DESC LIMIT 21 OFFSET :offset
+                """).param("user", user).param("kind", kind).param("jobId", jobId)
+                .param("offset", offset).query(this::row).list();
+    }
+
+    List<Row> interviewFeedback(String user, String jobId, List<String> questionIds) {
+        if (questionIds.isEmpty()) return List.of();
+        return db.sql("""
+                SELECT * FROM career_task WHERE user_id = :user AND job_id = :jobId
+                    AND kind = 'INTERVIEW' AND status = 'SUCCEEDED'
+                    AND JSON_UNQUOTE(JSON_EXTRACT(request_json, '$.questionId')) IN (:questionIds)
+                ORDER BY created_at DESC LIMIT 20
+                """).param("user", user).param("jobId", jobId).param("questionIds", questionIds)
+                .query(this::row).list();
     }
 
     @Transactional
@@ -114,6 +127,7 @@ class CareerTaskStore {
 
     private Row row(ResultSet rs, int index) throws SQLException {
         return new Row(rs.getString("id"), rs.getString("user_id"), rs.getString("kind"), rs.getString("status"),
+                rs.getString("job_id"),
                 tree(rs.getString("request_json")), tree(rs.getString("context_json")), tree(rs.getString("result_json")),
                 tree(rs.getString("training_catalog_json")), tree(rs.getString("training_draft_json")),
                 rs.getString("error_message"), rs.getInt("generation"), rs.getString("lease_token"),
@@ -128,7 +142,7 @@ class CareerTaskStore {
         }
     }
 
-    record Row(String id, String user, String kind, String status, JsonNode request, JsonNode context,
+    record Row(String id, String user, String kind, String status, String jobId, JsonNode request, JsonNode context,
             JsonNode result, JsonNode trainingCatalog, JsonNode trainingDraft, String error,
             int generation, String lease, Instant createdAt, Instant updatedAt) {}
 }

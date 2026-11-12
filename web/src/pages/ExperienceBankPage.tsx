@@ -1,6 +1,12 @@
-import { Alert, Button, Card, List, Space, Spin, Tabs, Typography } from 'antd'
-import { practiceApi } from '@/api/practice'
-import QuestionCatalog from './career/QuestionCatalog'
+import { useCallback, useState } from 'react'
+import { Alert, Button, Card, Empty, List, Space, Spin, Tabs, Tag, Typography } from 'antd'
+import { Link as RouteLink } from 'react-router-dom'
+import { careerWorkflow } from '@/api/careerWorkflow'
+import { practiceApi, type InterviewNote } from '@/api/practice'
+import { useCurrentJob } from './career/CurrentJob'
+import QuestionCatalog, { PracticeQuestionList } from './career/QuestionCatalog'
+import TaskHistory from './career/TaskHistory'
+import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
 
 const { Paragraph, Text, Title, Link } = Typography
@@ -10,9 +16,13 @@ function InterviewNotes() {
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
   if (!data) return <Spin />
 
+  return <NoteList notes={data} />
+}
+
+function NoteList({ notes }: { notes: InterviewNote[] }) {
   return (
     <List
-      dataSource={data}
+      dataSource={notes}
       rowKey="id"
       locale={{ emptyText: '暂时没有已整理的面经' }}
       renderItem={(note) => (
@@ -36,18 +46,100 @@ function InterviewNotes() {
   )
 }
 
+function JobRecommendations({ jobId }: { jobId: string }) {
+  const load = useCallback((signal: AbortSignal) => practiceApi.recommendations(jobId, signal), [jobId])
+  const { data, error, retry } = useCareerQuery(load)
+  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
+  if (!data) return <Spin />
+  if (!data.notes.length && !data.questions.length) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="公开资料库暂无匹配，可以联网查面经或生成岗位模拟题。" />
+  }
+  return (
+    <>
+      <Title level={4}>相关公开面经</Title>
+      <NoteList notes={data.notes} />
+      <Title level={4}>相关公开练习题</Title>
+      <PracticeQuestionList questions={data.questions} jobId={jobId} />
+    </>
+  )
+}
+
+function JobPreparation({ jobId }: { jobId: string }) {
+  const action = useCareerAction()
+  const [refresh, setRefresh] = useState(0)
+  return (
+    <Space direction="vertical" style={{ display: 'flex' }}>
+      <Paragraph>AI 根据岗位名称、JD 和能力标签生成开放式模拟题。作答后可获得逐题复盘。</Paragraph>
+      <Button type="primary" loading={action.saving} onClick={() => action.run(async () => {
+        await action.submit('preparation', { jobId }, careerWorkflow.prepare)
+        setRefresh((previous) => previous + 1)
+      })}>生成岗位模拟题</Button>
+      <TaskHistory key={refresh} kind="PREPARATION" jobId={jobId} render={(task) => task.result && (
+        <>
+          <Space wrap>
+            <Text strong>建议准备的能力</Text>
+            {task.result.skills?.map((skill) => <Tag key={skill}>{skill}</Tag>)}
+          </Space>
+          <List dataSource={task.result.openQuestions} renderItem={(question, index) => (
+            <List.Item actions={[
+              <RouteLink key="interview" to={`/career/interviews?job=${jobId}&question=${task.id}-${index}`}>开始作答</RouteLink>,
+            ]}>
+              <List.Item.Meta title={question.prompt} description={<Tag color="purple">AI 模拟 · {question.topic}</Tag>} />
+            </List.Item>
+          )} />
+        </>
+      )} />
+    </Space>
+  )
+}
+
+function JobDiscovery({ jobId }: { jobId: string }) {
+  const action = useCareerAction()
+  const [refresh, setRefresh] = useState(0)
+  return (
+    <Space direction="vertical" style={{ display: 'flex' }}>
+      <Paragraph>用公司和岗位名称搜索公开网页。结果包含网页来源、摘要和检索时间，可打开原网页核对。</Paragraph>
+      <Space wrap>
+        <Button type="primary" loading={action.saving} onClick={() => action.run(async () => {
+          await action.submit('discovery', { jobId }, careerWorkflow.discover)
+          setRefresh((previous) => previous + 1)
+        })}>联网查面经</Button>
+        <RouteLink to="/settings/models">配置联网搜索</RouteLink>
+      </Space>
+      <TaskHistory key={refresh} kind="DISCOVERY" jobId={jobId} render={(task) => task.result && (
+        <>
+          {task.result.searchedAt && <Text type="secondary">检索于 {new Date(task.result.searchedAt).toLocaleString()}</Text>}
+          <List dataSource={task.result.sources} rowKey={(source) => source.url}
+            locale={{ emptyText: '本次未找到可展示的网页' }}
+            renderItem={(source) => (
+              <List.Item><List.Item.Meta title={
+                <Link href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</Link>
+              } description={source.snippet} /></List.Item>
+            )} />
+        </>
+      )} />
+    </Space>
+  )
+}
+
 export default function ExperienceBankPage() {
+  const { job, loading } = useCurrentJob()
   return (
     <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
       <div>
         <Title level={2}>面经与题库</Title>
-        <Paragraph type="secondary">查看有来源的面试回顾，按目标岗位方向选择练习题。</Paragraph>
+        <Paragraph type="secondary">{job ? `${job.company} · ${job.title}` : '选择当前目标岗位，查看对应的面经和练习题。'}</Paragraph>
       </div>
       <Card>
-        <Tabs items={[
-          { key: 'questions', label: '题库', children: <QuestionCatalog /> },
+        {loading ? <Spin /> : <Tabs items={[
+          ...(job ? [
+            { key: 'recommended', label: '岗位推荐', children: <JobRecommendations jobId={job.id} /> },
+            { key: 'discovery', label: '联网面经', children: <JobDiscovery jobId={job.id} /> },
+            { key: 'preparation', label: 'AI 模拟题', children: <JobPreparation jobId={job.id} /> },
+          ] : []),
+          { key: 'questions', label: '公开题库', children: <QuestionCatalog /> },
           { key: 'notes', label: '公开面经', children: <InterviewNotes /> },
-        ]} />
+        ]} />}
       </Card>
     </Space>
   )

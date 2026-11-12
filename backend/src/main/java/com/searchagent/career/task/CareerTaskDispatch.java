@@ -1,7 +1,10 @@
 package com.searchagent.career.task;
 
 import java.net.http.HttpClient;
+import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -9,7 +12,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.NullNode;
 import jakarta.validation.Validator;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,11 +83,20 @@ class CareerTaskDispatch {
                             row.trainingCatalog() == null ? NullNode.getInstance() : row.trainingCatalog()))
                     .retrieve().body(JsonNode.class);
             if (!training) {
-                var evaluation = json.treeToValue(result, Evaluation.class);
+                Object evaluation = switch (row.kind()) {
+                    case "PREPARATION" -> json.treeToValue(result, Preparation.class);
+                    case "DISCOVERY" -> json.treeToValue(result, Discovery.class);
+                    default -> json.treeToValue(result, Evaluation.class);
+                };
                 if (evaluation == null || !validator.validate(evaluation).isEmpty()) {
                     throw new IllegalArgumentException("Invalid evaluation");
                 }
-                result = json.valueToTree(evaluation);
+                if (evaluation instanceof Discovery discovery) {
+                    result = json.valueToTree(Map.of("sources", discovery.sources().stream()
+                            .filter(source -> webUrl(source.url())).toList(), "searchedAt", Instant.now()));
+                } else {
+                    result = json.valueToTree(evaluation);
+                }
             }
         } catch (Exception error) {
             log.warn("Career task {} generation {} failed ({})", row.id(), row.generation(),
@@ -107,6 +121,7 @@ class CareerTaskDispatch {
         if (error instanceof RestClientResponseException http) {
             return switch (http.getStatusCode().value()) {
                 case 412 -> "请在模型配置中设置支持工具调用的默认对话模型，然后重试";
+                case 424 -> "请先在模型配置中添加联网搜索，再重试";
                 case 422 -> "模型未返回符合工具格式的结果。可以重试，或切换支持工具调用的模型。";
                 default -> "Agent 执行失败，请稍后重试";
             };
@@ -116,4 +131,27 @@ class CareerTaskDispatch {
 
     private record Evaluation(
             @NotBlank @Size(max = 6000) String feedback) {}
+
+    private record Preparation(
+            @NotNull @Size(min = 1, max = 8) List<@NotBlank @Size(max = 60) String> skills,
+            @NotNull @Size(min = 1, max = 5) List<@NotNull @Valid OpenQuestion> openQuestions) {}
+
+    private record OpenQuestion(
+            @NotBlank @Size(max = 80) String topic, @NotBlank @Size(max = 1000) String prompt,
+            @NotNull @Size(min = 1, max = 5) List<@NotBlank @Size(max = 500) String> rubric) {}
+
+    private record Discovery(@NotNull @Size(max = 10) List<@NotNull @Valid Source> sources) {}
+
+    private record Source(@NotBlank @Size(max = 240) String title, @NotBlank @Size(max = 2048) String url,
+            @NotNull @Size(max = 750) String snippet) {}
+
+    private static boolean webUrl(String value) {
+        try {
+            URI url = URI.create(value);
+            return url.getHost() != null && url.getRawUserInfo() == null
+                    && ("https".equalsIgnoreCase(url.getScheme()) || "http".equalsIgnoreCase(url.getScheme()));
+        } catch (IllegalArgumentException error) {
+            return false;
+        }
+    }
 }
