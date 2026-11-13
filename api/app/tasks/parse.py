@@ -7,10 +7,13 @@ Celery 任务为同步入口，内部用 asyncio.run 跑异步流程。
 import asyncio
 import uuid
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.models  # noqa: F401  确保所有 ORM 模型注册到 metadata
 from app.celery_app import celery_app
+from app.core.exceptions import BizError
+from app.core.llm.client import is_provider_quota_error, llm_task_connections
 from app.core.llm.resolver import get_client_for_type, get_optional_client_for_type
 from app.core.logging import get_logger
 from app.core.rag.chunker import chunk_parent_child
@@ -42,7 +45,7 @@ async def _run(document_id: str) -> None:
     engine = create_task_engine()
     session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     try:
-        async with session_maker() as session:
+        async with session_maker() as session, llm_task_connections():
             await _parse(session, document_id, doc_uuid)
     finally:
         await engine.dispose()
@@ -97,7 +100,10 @@ async def _parse(session: AsyncSession, document_id: str, doc_uuid: uuid.UUID) -
             es_docs.append(parent_doc)
 
             if parent.children:
-                vectors = await embed_client.embed(parent.children)
+                try:
+                    vectors = await embed_client.embed(parent.children)
+                except httpx.HTTPError as error:
+                    raise BizError(embedding_error_message(error)) from error
                 for child, vec in zip(parent.children, vectors):
                     es_docs.append(
                         build_chunk_doc(
@@ -132,8 +138,32 @@ async def _parse(session: AsyncSession, document_id: str, doc_uuid: uuid.UUID) -
     except Exception as e:
         logger.error("文档解析失败: %s: %s", document_id, e, exc_info=True)
         doc.status = DOC_STATUS_FAILED
-        doc.error_msg = str(e)[:500]
+        doc.error_msg = parse_error_message(e)
         await repo.save(doc)
+
+
+def parse_error_message(error: Exception) -> str:
+    if isinstance(error, BizError):
+        return error.message[:500]
+    if isinstance(error, ValueError) and str(error) in {"解析结果为空", "分块结果为空"}:
+        return str(error)
+    return "文档处理失败，请重新解析。若仍失败，请查看后台日志。"
+
+
+def embedding_error_message(error: httpx.HTTPError) -> str:
+    if isinstance(error, httpx.HTTPStatusError):
+        response = error.response
+        if is_provider_quota_error(response):
+            return "向量模型额度不足，请检查服务商余额或资源包后重新解析。"
+        if response.status_code in (401, 403):
+            return "向量模型鉴权失败，请检查 API Key 和模型权限。"
+        if response.status_code in (400, 404):
+            return "向量模型拒绝请求，请检查模型名称、Base URL 和向量维度。"
+        if response.status_code == 429:
+            return "向量模型调用过于频繁，请稍后重新解析。"
+    if isinstance(error, httpx.RequestError):
+        return "无法连接向量模型服务，请检查网络和 Base URL。"
+    return "向量模型服务暂时不可用，请稍后重新解析。"
 
 
 async def _auto_tag(session: AsyncSession, doc, text: str) -> None:

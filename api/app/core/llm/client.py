@@ -8,6 +8,8 @@ V0.0.5 ③:每个对外网络调用自动包一层 `llm_call` span,记录 model 
 """
 import asyncio
 import os
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 import httpx
 
@@ -39,15 +41,44 @@ _EMBED_CONCURRENCY = max(1, int(os.getenv("EMBED_CONCURRENCY", "8")))
 # 进程级共享 HTTP 客户端：复用连接池，避免每次请求重建 TCP/TLS。
 # 评测上万次嵌入调用时，握手开销累积可观，复用后显著提速。
 _shared_client: httpx.AsyncClient | None = None
+_task_client: ContextVar[httpx.AsyncClient | None] = ContextVar("llm_task_client", default=None)
+
+
+def _new_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(limits=httpx.Limits(max_connections=100, max_keepalive_connections=20))
 
 
 def _get_shared_client() -> httpx.AsyncClient:
+    task_client = _task_client.get()
+    if task_client is not None:
+        return task_client
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
-        )
+        _shared_client = _new_client()
     return _shared_client
+
+
+@asynccontextmanager
+async def llm_task_connections():
+    """Each Celery document task runs on a fresh event loop."""
+    async with _new_client() as client:
+        token = _task_client.set(client)
+        try:
+            yield
+        finally:
+            _task_client.reset(token)
+
+
+def is_provider_quota_error(response: httpx.Response) -> bool:
+    if response.status_code == 402:
+        return True
+    if response.status_code != 429:
+        return False
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return False
+    return isinstance(error, dict) and str(error.get("code")) in {"1113", "insufficient_quota"}
 
 
 async def close_llm_client() -> None:
@@ -71,15 +102,11 @@ async def _post_with_retry(
     for attempt in range(_MAX_RETRIES):
         try:
             resp = await client.post(url, headers=headers, json=json, timeout=timeout)
-            if resp.status_code in _RETRY_STATUS:
-                raise httpx.HTTPStatusError(
-                    f"可重试状态 {resp.status_code}", request=resp.request, response=resp
-                )
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as e:
             # 仅可重试状态进入重试；其余 4xx 直接抛
-            if e.response is not None and e.response.status_code not in _RETRY_STATUS:
+            if e.response.status_code not in _RETRY_STATUS or is_provider_quota_error(e.response):
                 raise
             last_exc = e
         except (httpx.TransportError, httpx.HTTPError) as e:

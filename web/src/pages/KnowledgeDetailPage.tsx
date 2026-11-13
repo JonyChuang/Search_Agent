@@ -251,7 +251,9 @@ function DocTab({ kbId }: { kbId: string }) {
           ))}
         </div>
         <div className="kb-row-meta">
-          <StatusTag status={d.status} />
+          {d.status === 'failed' && d.error_msg
+            ? <Tooltip title={d.error_msg}><span tabIndex={0}><StatusTag status={d.status} /></span></Tooltip>
+            : <StatusTag status={d.status} />}
           {d.status === 'parsing' && (
             <Progress
               percent={Math.round(d.progress * 100)}
