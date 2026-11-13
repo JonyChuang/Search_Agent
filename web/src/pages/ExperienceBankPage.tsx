@@ -132,13 +132,13 @@ export default function ExperienceBankPage() {
       </div>
       <Card>
         {loading ? <Spin /> : <Tabs items={[
+          { key: 'questions', label: '公开题库', children: <QuestionCatalog /> },
+          { key: 'notes', label: '公开面经', children: <InterviewNotes /> },
           ...(job ? [
             { key: 'recommended', label: '岗位推荐', children: <JobRecommendations jobId={job.id} /> },
             { key: 'discovery', label: '联网面经', children: <JobDiscovery jobId={job.id} /> },
             { key: 'preparation', label: 'AI 模拟题', children: <JobPreparation jobId={job.id} /> },
           ] : []),
-          { key: 'questions', label: '公开题库', children: <QuestionCatalog /> },
-          { key: 'notes', label: '公开面经', children: <InterviewNotes /> },
         ]} />}
       </Card>
     </Space>
