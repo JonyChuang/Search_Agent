@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react'
 import { Alert, Button, Card, Form, Select, Space, Typography } from 'antd'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { useCurrentJob } from './career/CurrentJob'
 import { practiceLink, roles } from './career/QuestionCatalog'
+import PreparationDocuments from './career/PreparationDocuments'
+import JobPreparationMemory from './career/JobPreparationMemory'
 import TaskHistory from './career/TaskHistory'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
@@ -12,12 +14,17 @@ const { Paragraph, Title } = Typography
 
 export default function TrainingPlanPage() {
   const { job, jobs, loading } = useCurrentJob()
+  const [params] = useSearchParams()
   const loadPreparation = useCallback((signal: AbortSignal) =>
     job ? careerWorkflow.tasks('PREPARATION', 1, signal, job.id) : Promise.resolve(undefined), [job])
   const preparation = useCareerQuery(loadPreparation)
   const latest = preparation.data?.items.find((item) => item.status === 'SUCCEEDED')
   const [trainingRefresh, refreshTraining] = useState(0)
   const [reviewRefresh, refreshReview] = useState(0)
+  const linkedDocument = params.get('document')
+  const [documentIds, setDocumentIds] = useState<string[]>(linkedDocument && /^[0-9a-f-]{36}$/.test(linkedDocument)
+    ? [linkedDocument] : [])
+  const [skillId, setSkillId] = useState<string>()
   const training = useCareerAction()
   const review = useCareerAction()
 
@@ -31,7 +38,7 @@ export default function TrainingPlanPage() {
         {preparation.error && <Alert type="error" message={preparation.error} action={<Button onClick={preparation.retry}>重试</Button>} />}
         <Form layout="vertical" onFinish={(values: { jobId: string; role?: string }) => training.run(async () => {
           const input = job ? { jobId: job.id, preparationId: latest?.id } : values
-          await training.submit('training', input, careerWorkflow.training)
+          await training.submit('training', { ...input, documentIds, skillId }, careerWorkflow.training)
           refreshTraining((n) => n + 1)
         })}>
           {job ? <Paragraph>
@@ -46,6 +53,7 @@ export default function TrainingPlanPage() {
               <Select options={Object.entries(roles).map(([value, label]) => ({ value, label }))} />
             </Form.Item>
           </>}
+          <PreparationDocuments value={documentIds} onChange={setDocumentIds} skillId={skillId} onSkillChange={setSkillId} />
           <Space wrap>
             <Button htmlType="submit" type="primary" loading={training.saving}
               disabled={loading || !jobs?.length || (!!job && !preparation.data)}>生成计划</Button>
@@ -54,6 +62,7 @@ export default function TrainingPlanPage() {
           </Space>
         </Form>
       </Card>
+      {job && <Card size="small"><JobPreparationMemory jobId={job.id} /></Card>}
       <Title level={3}>训练计划</Title>
       <TaskHistory key={trainingRefresh} kind="TRAINING" jobId={job?.id} render={(task) => task.result && (
         <>

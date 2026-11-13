@@ -1,7 +1,7 @@
 # 求职 Agent 工程设计与简历成果路线
 
 日期：2026-11-05
-状态：设计与实施计划；本文新增能力尚未实现或评测。
+状态：历史设计与实施计划。当前落地范围见 [个人资料与求职 Agent 执行记录](career-agent-preparation.md)。
 架构前提：[Java 业务后端 + Python Agent](java-agent-architecture-2026-11-05.md)。
 
 ## 1. 参考原则与当前基础

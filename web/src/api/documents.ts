@@ -56,11 +56,11 @@ export interface DocumentPreview {
 }
 
 export const documentApi = {
-  list(page = 1, pageSize = 100, tag?: string, kbId?: string) {
+  list(page = 1, pageSize = 100, tag?: string, kbId?: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (tag) q.set('tag', tag)
     if (kbId) q.set('kb_id', kbId)
-    return client.get<unknown, Wrapped<DocumentListData>>(`/documents?${q.toString()}`)
+    return client.get<unknown, Wrapped<DocumentListData>>(`/documents?${q.toString()}`, { signal })
   },
   // 上传文档（multipart）
   upload(file: File, kbId?: string) {

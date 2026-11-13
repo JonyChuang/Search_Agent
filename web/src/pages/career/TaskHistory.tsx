@@ -3,6 +3,7 @@ import { Alert, Button, Card, Empty, Space, Spin, Tag, Typography } from 'antd'
 import { careerWorkflow, type CareerTask, type TaskKind } from '@/api/careerWorkflow'
 import { useCareerAction } from './useCareerAction'
 import { useCareerQuery } from './useCareerQuery'
+import TaskDetails from './TaskDetails'
 
 const { Paragraph, Text } = Typography
 const status = {
@@ -66,6 +67,7 @@ export default function TaskHistory({ kind, jobId, render }: {
           } />}
           {render?.(task)}
           {task.result?.feedback && <Paragraph style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{task.result.feedback}</Paragraph>}
+          <TaskDetails task={task} />
         </Card>
       ))}
       <Space>

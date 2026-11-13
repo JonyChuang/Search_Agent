@@ -80,7 +80,8 @@ class CareerTaskDispatch {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(Map.of("id", row.id(), "lease", row.lease(), "userId", row.user(),
                             "kind", row.kind(), "context", row.context(), "trainingCatalog",
-                            row.trainingCatalog() == null ? NullNode.getInstance() : row.trainingCatalog()))
+                            row.trainingCatalog() == null ? NullNode.getInstance() : row.trainingCatalog(),
+                            "agentContext", row.agentContext() == null ? NullNode.getInstance() : row.agentContext()))
                     .retrieve().body(JsonNode.class);
             if (!training) {
                 Object evaluation = switch (row.kind()) {
@@ -123,6 +124,9 @@ class CareerTaskDispatch {
                 case 412 -> "请在模型配置中设置支持工具调用的默认对话模型，然后重试";
                 case 424 -> "请先在模型配置中添加联网搜索，再重试";
                 case 422 -> "模型未返回符合工具格式的结果。可以重试，或切换支持工具调用的模型。";
+                case 409 -> "备考资料或技能不可用、已变更，请检查后重新创建任务。";
+                case 413 -> "备考输入超出上下文预算，请减少参考资料或缩短输入后重新创建任务。";
+                case 429 -> "模型服务暂时繁忙，请稍后重试。";
                 default -> "Agent 执行失败，请稍后重试";
             };
         }

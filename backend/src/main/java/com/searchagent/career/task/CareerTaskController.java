@@ -5,6 +5,7 @@ import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.List;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -31,7 +32,7 @@ class CareerTaskController {
     }
 
     @PostMapping("/preparation")
-    CareerResponse<CareerTasks.Task> prepare(@CareerUser String user, @Valid @RequestBody CareerTasks.JobRequest input) {
+    CareerResponse<CareerTasks.Task> prepare(@CareerUser String user, @Valid @RequestBody CareerTasks.PreparationRequest input) {
         return CareerResponse.ok(tasks.prepare(user, input));
     }
 
@@ -60,6 +61,11 @@ class CareerTaskController {
     @GetMapping("/{id}")
     CareerResponse<CareerTasks.Task> get(@CareerUser String user, @PathVariable UUID id) {
         return CareerResponse.ok(tasks.get(user, id));
+    }
+
+    @GetMapping("/{id}/events")
+    CareerResponse<List<CareerTaskStore.Event>> events(@CareerUser String user, @PathVariable UUID id) {
+        return CareerResponse.ok(tasks.events(user, id));
     }
 
     @PostMapping("/{id}/retry")
@@ -93,11 +99,32 @@ class CareerTaskTools {
         tasks.checkpointPlan(requireTraining(id, token, lease), input);
     }
 
-    private CareerTaskStore.Row requireTraining(UUID id, String token, UUID lease) {
+    @PutMapping("/context")
+    JsonNode context(@PathVariable UUID id, @RequestHeader("X-Career-Service") String token,
+            @RequestHeader("X-Career-Lease") UUID lease, @RequestBody JsonNode context) {
+        var row = requireActive(id, token, lease);
+        return tasks.checkpointContext(row, context);
+    }
+
+    @PostMapping("/events")
+    void event(@PathVariable UUID id, @RequestHeader("X-Career-Service") String token,
+            @RequestHeader("X-Career-Lease") UUID lease, @Valid @RequestBody CareerTaskStore.EventInput event) {
+        var row = requireActive(id, token, lease);
+        if (!store.recordEvent(row, event)) {
+            throw new ResponseStatusException(CONFLICT, "任务执行代次已失效");
+        }
+    }
+
+    private CareerTaskStore.Row requireActive(UUID id, String token, UUID lease) {
         if (secret.length == 0 || !MessageDigest.isEqual(secret, token.getBytes(StandardCharsets.UTF_8))) {
             throw new ResponseStatusException(UNAUTHORIZED, "内部服务认证失败");
         }
-        return store.active(id, lease).filter(row -> "TRAINING".equals(row.kind()))
-                .orElseThrow(() -> new ResponseStatusException(CONFLICT, "训练任务执行代次已失效"));
+        return store.active(id, lease).orElseThrow(() -> new ResponseStatusException(CONFLICT, "任务执行代次已失效"));
+    }
+
+    private CareerTaskStore.Row requireTraining(UUID id, String token, UUID lease) {
+        var row = requireActive(id, token, lease);
+        if (!"TRAINING".equals(row.kind())) throw new ResponseStatusException(CONFLICT, "当前任务不支持训练工具");
+        return row;
     }
 }

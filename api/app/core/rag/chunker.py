@@ -19,7 +19,7 @@ _encoder = tiktoken.get_encoding("cl100k_base")
 
 
 def count_tokens(text: str) -> int:
-    return len(_encoder.encode(text))
+    return len(_encoder.encode_ordinary(text))
 
 
 def _split_sentences(text: str) -> list[str]:

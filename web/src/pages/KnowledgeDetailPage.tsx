@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   Button,
   Empty,
@@ -267,6 +267,7 @@ function DocTab({ kbId }: { kbId: string }) {
         </div>
       </div>
       <div className="kb-row-actions">
+        <Link to={`/career/plan?document=${encodeURIComponent(d.id)}`}>用于备考</Link>
         <Tooltip title="查看内容">
           <Button
             size="small"

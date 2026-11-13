@@ -77,6 +77,56 @@ class CareerDataIntegrationTest {
     }
 
     @Test
+    void checkpointsAcceptOnlySelectedReferencesAndExposeOnlyOwnersEvents() throws Exception {
+        String job = createWorkflowJob();
+        String document = UUID.randomUUID().toString();
+        String task = savedId("/api/career/tasks/preparation", """
+                {"jobId":"%s","requestId":"%s","documentIds":["%s"]}
+                """.formatted(job, UUID.randomUUID(), document));
+        String memory = JOBS + "/" + job + "/memory";
+        mvc.perform(put(memory).header("Authorization", access(owner)).contentType("application/json")
+                .content("{\"revision\":0,\"notes\":\"每天复习 30 分钟\"}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.revision").value(1));
+        mvc.perform(get(memory).header("Authorization", access(other))).andExpect(status().isNotFound());
+        mvc.perform(put(memory).header("Authorization", access(owner)).contentType("application/json")
+                .content("{\"revision\":0,\"notes\":null}")).andExpect(status().isConflict());
+        mvc.perform(put(memory).header("Authorization", access(owner)).contentType("application/json")
+                .content("{\"revision\":1,\"notes\":null}")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.revision").value(2));
+        String lease = UUID.randomUUID().toString();
+        jdbc.update("""
+                UPDATE career_task SET status = 'RUNNING', generation = 1, lease_token = ?,
+                    lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND) WHERE id = ?
+                """, lease, task);
+        String tool = "/internal/career/tasks/" + task;
+        String input = """
+                {"payload":{"job":{"label":"目标岗位"}},"references":[{"id":"%s","title":"备考资料",
+                 "revision":"%s"}],"skill":{"id":"preparation","version":1,"instructions":"生成模拟题"}}
+                """.formatted(document, "a".repeat(64));
+        mvc.perform(put(tool + "/context").header("X-Career-Service", "integration-test-service-token")
+                .header("X-Career-Lease", lease).contentType("application/json")
+                .content(input.replace(document, UUID.randomUUID().toString()))).andExpect(status().isBadRequest());
+        mvc.perform(put(tool + "/context").header("X-Career-Service", "integration-test-service-token")
+                .header("X-Career-Lease", lease).contentType("application/json").content(input)).andExpect(status().isOk());
+        mvc.perform(put(tool + "/context").header("X-Career-Service", "integration-test-service-token")
+                .header("X-Career-Lease", lease).contentType("application/json")
+                .content(input.replace("目标岗位", "其他岗位"))).andExpect(status().isConflict());
+        String event = """
+                {"sequenceNo":1,"step":"assemble_context","outcome":"succeeded","elapsedMs":20}
+                """;
+        for (int i = 0; i < 2; i++) {
+            mvc.perform(post(tool + "/events").header("X-Career-Service", "integration-test-service-token")
+                    .header("X-Career-Lease", lease).contentType("application/json").content(event))
+                    .andExpect(status().isOk());
+        }
+        mvc.perform(get("/api/career/tasks/" + task + "/events").header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].step").value("assemble_context"));
+        mvc.perform(get("/api/career/tasks/" + task + "/events").header("Authorization", access(other)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
     void activeJobAndObjectivePracticeStayScopedToOwnerAndJob() throws Exception {
         String first = createWorkflowJob();
         String second = createWorkflowJob();

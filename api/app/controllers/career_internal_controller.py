@@ -5,12 +5,15 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from openai import RateLimitError
 from pydantic import BaseModel
 
 from app.config import settings
 from app.core.exceptions import BizError
+from app.services.career_context import CareerContextTooLarge, CareerSourceUnavailable
 from app.services.career_task_service import (
     CareerRun,
+    CareerSkillUnavailable,
     InvalidCareerToolResponse,
     MissingCareerSearch,
     MissingCareerTools,
@@ -52,6 +55,14 @@ async def run_task(run: CareerRun) -> dict:
         raise HTTPException(424, "未配置联网搜索") from error
     except InvalidCareerToolResponse as error:
         raise HTTPException(422, "模型未按工具格式返回结果") from error
+    except CareerSourceUnavailable as error:
+        raise HTTPException(409, "备考资料不可用或已变更") from error
+    except CareerSkillUnavailable as error:
+        raise HTTPException(409, "备考技能已修改、停用或不可访问") from error
+    except CareerContextTooLarge as error:
+        raise HTTPException(413, "备考输入超出上下文预算") from error
+    except RateLimitError as error:
+        raise HTTPException(429, "模型请求超过额度或频率限制") from error
     except BizError as error:
         if error.code == 2010:
             raise HTTPException(412, "未配置默认对话模型") from error

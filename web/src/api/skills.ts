@@ -51,8 +51,8 @@ export interface BuiltinSkill {
 }
 
 export const skillApi = {
-  list() {
-    return client.get<unknown, Wrapped<Skill[]>>('/skills')
+  list(signal?: AbortSignal) {
+    return client.get<unknown, Wrapped<Skill[]>>('/skills', { signal })
   },
   builtins() {
     return client.get<unknown, Wrapped<BuiltinSkill[]>>('/skills/builtins')

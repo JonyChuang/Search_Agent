@@ -6,6 +6,7 @@ import { practiceApi, type InterviewNote } from '@/api/practice'
 import { useCurrentJob } from './career/CurrentJob'
 import QuestionCatalog, { PracticeQuestionList } from './career/QuestionCatalog'
 import TaskHistory from './career/TaskHistory'
+import PreparationDocuments from './career/PreparationDocuments'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
 
@@ -67,11 +68,14 @@ function JobRecommendations({ jobId }: { jobId: string }) {
 function JobPreparation({ jobId }: { jobId: string }) {
   const action = useCareerAction()
   const [refresh, setRefresh] = useState(0)
+  const [documentIds, setDocumentIds] = useState<string[]>([])
+  const [skillId, setSkillId] = useState<string>()
   return (
     <Space direction="vertical" style={{ display: 'flex' }}>
       <Paragraph>AI 根据岗位名称、JD 和能力标签生成开放式模拟题。作答后可获得逐题复盘。</Paragraph>
+      <PreparationDocuments value={documentIds} onChange={setDocumentIds} skillId={skillId} onSkillChange={setSkillId} />
       <Button type="primary" loading={action.saving} onClick={() => action.run(async () => {
-        await action.submit('preparation', { jobId }, careerWorkflow.prepare)
+        await action.submit('preparation', { jobId, documentIds, skillId }, careerWorkflow.prepare)
         setRefresh((previous) => previous + 1)
       })}>生成岗位模拟题</Button>
       <TaskHistory key={refresh} kind="PREPARATION" jobId={jobId} render={(task) => task.result && (

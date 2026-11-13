@@ -6,6 +6,7 @@ import { practiceApi } from '@/api/practice'
 import { useCurrentJob } from './career/CurrentJob'
 import { roles } from './career/QuestionCatalog'
 import TaskHistory from './career/TaskHistory'
+import PreparationDocuments from './career/PreparationDocuments'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
 
@@ -35,6 +36,8 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
   const question = questions.data?.find((item) => item.id === questionId)
   const action = useCareerAction()
   const [refresh, setRefresh] = useState(0)
+  const [documentIds, setDocumentIds] = useState<string[]>([])
+  const [skillId, setSkillId] = useState<string>()
 
   return (
     <>
@@ -46,6 +49,8 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
           if (!question) return
           await action.submit('interview', {
             jobId: jobId ?? values.jobId, answer: values.answer.trim(), questionId: question.id, questionVersion: question.version,
+            documentIds,
+            skillId,
           }, careerWorkflow.interview)
           form.resetFields(['answer'])
           setRefresh((n) => n + 1)
@@ -71,6 +76,7 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
           <Form.Item name="answer" label="你的回答" rules={[{ required: true, whitespace: true }]}>
             <Input.TextArea rows={5} maxLength={6000} showCount />
           </Form.Item>
+          <PreparationDocuments value={documentIds} onChange={setDocumentIds} skillId={skillId} onSkillChange={setSkillId} />
           <Space wrap>
             <Button htmlType="submit" type="primary" disabled={!question || !jobs?.length} loading={action.saving}>提交并生成复盘</Button>
             <Link to="/career/questions">查看岗位题库</Link>

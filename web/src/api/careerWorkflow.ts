@@ -4,6 +4,7 @@ import type { Question } from './practice'
 
 type Response<T> = { code: number; message: string; data: T }
 type JobRequest = { jobId: string }
+type PreparationInput = { documentIds?: string[]; skillId?: string }
 
 export type TaskKind = 'TRAINING' | 'REVIEW' | 'INTERVIEW' | 'PREPARATION' | 'DISCOVERY'
 
@@ -33,7 +34,23 @@ export interface CareerTask {
   error: string | null
   generation: number
   trainingStep?: 'FIND_QUESTIONS' | 'GENERATE_PLAN' | 'SAVE_PLAN' | 'COMPLETE' | null
+  references?: { id: string; title: string; revision: string }[] | null
   createdAt: string
+}
+
+export interface TaskEvent {
+  generation: number
+  sequenceNo: number
+  step: string
+  outcome: 'succeeded' | 'failed'
+  elapsedMs: number
+  inputTokens: number | null
+  outputTokens: number | null
+}
+
+export interface JobMemory {
+  revision: number
+  notes: string | null
 }
 
 export interface Resume {
@@ -89,12 +106,16 @@ export const careerWorkflow = {
   tasks: (kind: TaskKind, page: number, signal: AbortSignal, jobId?: string) =>
     get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page, jobId }),
   task: (id: string, signal: AbortSignal) => get<CareerTask>(`/career/tasks/${encodeURIComponent(id)}`, signal),
-  prepare: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/preparation', input),
+  taskEvents: (id: string, signal: AbortSignal) => get<TaskEvent[]>(`/career/tasks/${id}/events`, signal),
+  memory: (jobId: string, signal: AbortSignal) => get<JobMemory>(`/career/jobs/${jobId}/memory`, signal),
+  saveMemory: async (jobId: string, input: JobMemory) =>
+    (await client.put<unknown, Response<JobMemory>>(`/career/jobs/${jobId}/memory`, input)).data,
+  prepare: (input: JobRequest & PreparationInput & { requestId: string }) => post<CareerTask>('/career/tasks/preparation', input),
   discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
-  training: (input: JobRequest & { requestId: string; role?: string; preparationId?: string }) =>
+  training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
-  interview: (input: JobRequest & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>
+  interview: (input: JobRequest & PreparationInput & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>
     post<CareerTask>('/career/tasks/interview', input),
   retry: (id: string) => post<CareerTask>(`/career/tasks/${id}/retry`),
   resumes: (signal: AbortSignal) => get<Resume[]>('/career/resumes', signal),

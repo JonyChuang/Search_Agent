@@ -1,4 +1,6 @@
 """知识库文档业务服务：上传/网页导入/列表/状态/重试/删除/检索。"""
+import asyncio
+import hashlib
 import uuid
 from pathlib import Path
 
@@ -186,7 +188,7 @@ class DocumentService:
             logger.warning("移动文档回写 ES kb_id 失败（忽略）: %s", e)
         return doc
 
-    async def preview(self, user_id: uuid.UUID, doc_id: uuid.UUID) -> dict:
+    async def preview(self, user_id: uuid.UUID, doc_id: uuid.UUID, *, include_revision: bool = False) -> dict:
         """读取文档原文内容供查看：md/txt 保留原文，pdf/docx/html 提取纯文本。
 
         从对象存储取原始文件按类型解析，超长截断（带 truncated 标记）。
@@ -205,9 +207,9 @@ class DocumentService:
         try:
             if is_markdown or ext == ".txt":
                 # 保留原始文本（markdown 交前端渲染，纯文本原样展示）
-                text = decode_text(raw)
+                text = await asyncio.to_thread(decode_text, raw)
             else:
-                text = parse_document(ext, raw)
+                text = await asyncio.to_thread(parse_document, ext, raw)
         except Exception as e:
             logger.warning("文档预览解析失败: id=%s err=%s", doc_id, e)
             raise BizError(f"内容解析失败：{e}", code=3034) from e
@@ -216,7 +218,7 @@ class DocumentService:
         truncated = len(text) > self.PREVIEW_MAX_CHARS
         if truncated:
             text = text[: self.PREVIEW_MAX_CHARS]
-        return {
+        result = {
             "id": str(doc.id),
             "file_name": doc.file_name,
             "file_ext": ext,
@@ -225,6 +227,9 @@ class DocumentService:
             "content": text,
             "truncated": truncated,
         }
+        if include_revision:
+            result["revision"] = hashlib.sha256(raw).hexdigest()
+        return result
 
     async def to_out_dict(self, doc: Document) -> dict:
         tags = await self.tag_repo.get_document_tags(doc.id)
