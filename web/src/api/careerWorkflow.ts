@@ -112,7 +112,7 @@ export const careerWorkflow = {
     (await client.put<unknown, Response<JobMemory>>(`/career/jobs/${jobId}/memory`, input)).data,
   prepare: (input: JobRequest & PreparationInput & { requestId: string }) => post<CareerTask>('/career/tasks/preparation', input),
   discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
-  training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string }) =>
+  training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string; preferredQuestion?: string }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
   interview: (input: JobRequest & PreparationInput & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>

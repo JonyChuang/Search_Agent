@@ -30,7 +30,7 @@ def _fallback_plan(topic: str) -> ResearchPlan:
     )
 
 
-async def make_plan(model: ChatOpenAI, topic: str) -> ResearchPlan:
+async def make_plan(model: ChatOpenAI, topic: str, *, require_queries: bool = False) -> ResearchPlan:
     """生成研究计划（标题 + 多视角章节 + 子问题）；异常或解析失败降级兜底。"""
     topic = (topic or "").strip()
     if not topic:
@@ -49,11 +49,15 @@ async def make_plan(model: ChatOpenAI, topic: str) -> ResearchPlan:
         push_llm_usage(resp, model)
         text = resp.content if isinstance(resp.content, str) else str(resp.content)
     except Exception as e:
+        if require_queries:
+            raise RuntimeError("无法规划公司调研，请检查对话模型配置或额度。") from e
         logger.warning("研究规划 LLM 调用失败，用兜底计划: %s", e)
         return _fallback_plan(topic)
 
     data = parse_json_object(text)
     if not data:
+        if require_queries:
+            raise RuntimeError("对话模型未能生成调研计划，请调整要求后重试。")
         logger.warning("研究规划解析失败，用兜底计划")
         return _fallback_plan(topic)
 
@@ -80,6 +84,8 @@ async def make_plan(model: ChatOpenAI, topic: str) -> ResearchPlan:
         )
     sections = sections[: settings.research_max_sections]
     if not sections:
+        if require_queries:
+            raise RuntimeError("对话模型未能生成调研提纲，请调整要求后重试。")
         sections = [
             PlanSection(
                 heading="综合分析", points="围绕主题综合检索资料并归纳", sub_questions=[topic]
@@ -100,7 +106,11 @@ async def make_plan(model: ChatOpenAI, topic: str) -> ResearchPlan:
             seen.add(q.strip())
             queries.append(q.strip())
     queries = queries[: settings.research_max_queries]
+    if require_queries:
+        queries = [query for query in queries if len(query) <= 300 and "\n" not in query]
     if not queries:
+        if require_queries:
+            raise RuntimeError("对话模型未能生成有效的调研搜索词，请调整要求后重试。")
         queries = [topic]
 
     return ResearchPlan(title=title, sections=sections, queries=queries)

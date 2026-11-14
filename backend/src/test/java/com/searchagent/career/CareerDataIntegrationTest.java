@@ -190,9 +190,16 @@ class CareerDataIntegrationTest {
         mvc.perform(post(root + "/interview").header("Authorization", access(owner)).contentType("application/json")
                         .content(answer)).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.interview.prompt").value("如何评估修复结果？"));
-        savedId(root + "/training", """
-                {"jobId":"%s","requestId":"%s","preparationId":"%s"}
-                """.formatted(job, UUID.randomUUID(), preparation));
+        String training = """
+                {"jobId":"%s","requestId":"%s","preparationId":"%s","preferredQuestion":"%s-0"}
+                """.formatted(job, UUID.randomUUID(), preparation, preparation);
+        mvc.perform(post(root + "/training").header("Authorization", access(owner)).contentType("application/json")
+                .content(training.replace(preparation + "-0", otherJob + "-0"))).andExpect(status().isBadRequest());
+        mvc.perform(post(root + "/training").header("Authorization", access(owner)).contentType("application/json")
+                .content(training.replace(preparation + "-0", preparation + "-1"))).andExpect(status().isNotFound());
+        String trainingId = savedId(root + "/training", training);
+        mvc.perform(get(root + "/" + trainingId).header("Authorization", access(owner)))
+                .andExpect(jsonPath("$.data.request.preferredQuestion").value(preparation + "-0"));
     }
 
     @Test

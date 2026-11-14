@@ -2,7 +2,7 @@ import { useCallback, type ReactNode } from 'react'
 import {
   ArrowDownOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckOutlined,
   CommentOutlined, CompassOutlined, FileDoneOutlined, FileSearchOutlined, FileTextOutlined,
-  FlagOutlined, FundOutlined, ReadOutlined, ReloadOutlined, ThunderboltOutlined,
+  FlagOutlined, FundOutlined, ReadOutlined, ReloadOutlined,
 } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
 import { careerApi } from '@/api/career'
@@ -12,6 +12,7 @@ import { practiceApi } from '@/api/practice'
 import { useAuthStore } from '@/stores/authStore'
 import { useCurrentJob } from './career/CurrentJob'
 import { useCareerQuery } from './career/useCareerQuery'
+import { jobPath, preparationPath } from './career/paths'
 import styles from './CareerHomePage.module.css'
 
 const stageColors: Record<Stage, string> = {
@@ -23,12 +24,9 @@ const stages = Object.keys(applicationStages) as Stage[]
 const features = [
   { title: '求职助手', copy: '和 AI 讨论岗位、材料与准备方向', to: '/chat', icon: CommentOutlined, tone: 'violet' },
   { title: '简历与经历', copy: '归档真实经历，生成岗位简历', to: '/career/resume', icon: FileTextOutlined, tone: 'blue' },
-  { title: '岗位与公司', copy: '收藏目标岗位，整理招聘信息', to: '/career/jobs', icon: FileSearchOutlined, tone: 'teal' },
+  { title: '岗位与公司', copy: '保存招聘信息，发起公司调研', to: '/career/jobs', icon: FileSearchOutlined, tone: 'teal' },
   { title: '我的资料', copy: '集中管理文档和网页资料', to: '/knowledge', icon: BookOutlined, tone: 'amber' },
-  { title: '面经与题库', copy: '阅读公开面经，按岗位方向找题', to: '/career/questions', icon: ReadOutlined, tone: 'blue' },
-  { title: '刷题练习', copy: '即时查看判分，回顾做错的题', to: '/career/practice', icon: AuditOutlined, tone: 'teal' },
-  { title: '岗位训练计划', copy: '结合岗位要求安排选题和复习', to: '/career/plan', icon: ThunderboltOutlined, tone: 'violet' },
-  { title: '模拟面试', copy: '练习一道岗位问答，获得复盘', to: '/career/interviews', icon: CompassOutlined, tone: 'amber' },
+  { title: '备考中心', copy: '查面经、安排训练、练习并复盘', to: preparationPath(), icon: ReadOutlined, tone: 'blue' },
   { title: '网申助手', copy: '关联简历版本，整理申请答案', to: '/career/apply', icon: FileDoneOutlined, tone: 'violet' },
   { title: '投递看板', copy: '维护实际投递阶段，回看记录', to: '/career/applications', icon: FundOutlined, tone: 'blue' },
 ] as const
@@ -100,7 +98,7 @@ export default function CareerHomePage() {
       action: jobs?.length ? '选择岗位' : '添加岗位', done: jobs && !!job },
     { title: '配置 AI 教练', copy: '启用对话模型的工具调用，开始定向训练。', to: '/settings/models',
       action: '配置模型', done: models.data && !!model?.capability?.includes('function_call'), error: models.error },
-    { title: '完成首道练习', copy: '选一道岗位方向的题，看看自己的掌握情况。', to: job ? '/career/questions' : '/career/practice',
+    { title: '完成首道练习', copy: '选一道岗位方向的题，看看自己的掌握情况。', to: preparationPath('library'),
       action: '开始练习', done: completedInterviews > 0 || (attempts && (!job || interviews.data) && attempts.length > 0),
       error: practice.error || interviews.error },
   ]
@@ -117,7 +115,7 @@ export default function CareerHomePage() {
           <h1>求职总览</h1>
           <p>{job ? `当前准备 ${job.company} · ${job.title}` : `${nickname?.trim() ? `你好，${nickname.trim()}。` : ''}把目标岗位变成具体的准备计划。从整理经历、练习面试到跟进投递，每一步都有记录。`}</p>
           <div className={styles.heroActions}>
-            <Link className={styles.primary} to={next?.to ?? '/career/plan'}>{next?.action ?? '查看训练计划'} <ArrowRightOutlined /></Link>
+            <Link className={styles.primary} to={next?.to ?? preparationPath()}>{next?.action ?? '查看训练计划'} <ArrowRightOutlined /></Link>
             <a className={styles.secondary} href="#career-features">浏览功能 <ArrowDownOutlined /></a>
           </div>
         </div>
@@ -164,10 +162,10 @@ export default function CareerHomePage() {
               {practice.error || interviews.error ? '练习记录暂时无法读取。'
                 : attempts && (!job || interviews.data) ? '还没有练习记录，完成第一道题后可查看表现。' : '正在读取练习记录…'}
             </p>}
-            {completedInterviews > 0 && <Link className={styles.chartLink} to="/career/interviews">
+            {completedInterviews > 0 && <Link className={styles.chartLink} to={preparationPath('review')}>
               最近完成 {completedInterviews} 次模拟面试 <ArrowRightOutlined />
             </Link>}
-            <Link className={styles.chartLink} to="/career/practice">前往刷题练习 <ArrowRightOutlined /></Link>
+            <Link className={styles.chartLink} to={preparationPath('library')}>前往题库选题 <ArrowRightOutlined /></Link>
           </OverviewCard>
           <OverviewCard title="投递阶段" eyebrow="按当前阶段统计，含草稿" icon={<FundOutlined />}>
             {visibleApplications?.length ? (
@@ -185,7 +183,9 @@ export default function CareerHomePage() {
       </section>
 
       <section className={`${styles.panel} ${styles.featuresPanel}`} id="career-features" aria-labelledby="career-features-title">
-        <div className={styles.sectionHeading}><div><h2 id="career-features-title">功能一览</h2><p>按你的准备节奏，直接进入需要的工具。</p></div></div>
+        <div className={styles.sectionHeading}><div><h2 id="career-features-title">功能一览</h2></div>
+          {job && <Link className={styles.chartLink} to={jobPath(job.id)}>调研当前公司 <ArrowRightOutlined /></Link>}
+        </div>
         <div className={styles.features}>
           {features.map(({ title, copy, to, icon: Icon, tone }) => (
             <Link to={to} className={styles.feature} key={to}>

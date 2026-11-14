@@ -132,7 +132,7 @@ async def get_websearch_config(
 # ── A. 联网搜索 + 抓正文（质量主力）──
 
 async def gather_web_sources(
-    provider: str, api_key: str, queries: list[str], emit: EmitFn | None = None
+    provider: str, api_key: str, queries: list[str], emit: EmitFn | None = None, *, add_current_month: bool = True
 ) -> list[Source]:
     """多查询联网搜索 → 跨查询按 URL 去重 → 并发抓正文。
 
@@ -153,7 +153,7 @@ async def gather_web_sources(
                 return q
         return f"{q} {year_token}年{today.month}月"
 
-    augmented = [_augment(q) for q in queries]
+    augmented = [_augment(q) for q in queries] if add_current_month else queries
 
     # 1) 限并发跑各子查询的结构化搜索（防搜索 API 429）+ 失败/限流退避重试
     search_sem = asyncio.Semaphore(settings.research_search_concurrency)

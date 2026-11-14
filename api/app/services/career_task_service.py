@@ -308,7 +308,8 @@ async def generate_plan(
         "你是求职训练教练。题目目录已经查到。结合 JD 和已确认经历，用中文制定训练计划。"
         "只调用一次 create_training_plan，填写岗位分析、1 至 8 个学习步骤和 1 至 8 道题。"
         "逐字使用目录中的题目 ID 和版本号，题目不得重复。若题库方向与 JD 不完全吻合，"
-        "从目录选最相关的题目，并在岗位分析中说明覆盖缺口。" + SOURCE_INSTRUCTIONS
+        "从目录选最相关的题目，并在岗位分析中说明覆盖缺口。若上下文有 preferredQuestion，"
+        "计划必须包含指定 ID 的题目。" + SOURCE_INSTRUCTIONS
     )
     catalog_json = json.dumps(catalog, ensure_ascii=False)
     allowed = {(entry["id"], entry["version"]) for entry in catalog}
@@ -326,6 +327,9 @@ async def generate_plan(
             ids = {question.id for question in plan.questions}
             if len(ids) != len(plan.questions) or any((q.id, q.version) not in allowed for q in plan.questions):
                 raise InvalidCareerToolResponse("Plan contains repeated or out-of-catalog questions")
+            preferred = run.context.get("preferredQuestion")
+            if preferred and preferred not in ids:
+                raise InvalidCareerToolResponse("Plan omitted the requested practice question")
             if trace:
                 await trace.event("create_training_plan", "succeeded", started, response)
             return plan

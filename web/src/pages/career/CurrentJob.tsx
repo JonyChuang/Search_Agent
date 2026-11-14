@@ -50,11 +50,13 @@ export function CurrentJobSelect({ maxWidth }: { maxWidth?: number }) {
 
   function changeJob(value?: string) {
     select(value ?? null, () => {
-      if (!params.has('job') && !params.has('question')) return
+      if (!['job', 'question', 'document', 'source'].some((key) => params.has(key))) return
       const next = new URLSearchParams(params)
       next.delete('job')
       next.delete('question')
       next.delete('version')
+      next.delete('document')
+      if (params.get('tab') === 'plan') next.delete('source')
       setParams(next, { replace: true })
     })
   }

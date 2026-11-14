@@ -9,10 +9,13 @@ import TaskHistory from './career/TaskHistory'
 import PreparationDocuments from './career/PreparationDocuments'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
+import { preparationPath } from './career/paths'
 
 const { Paragraph, Text, Title } = Typography
 
 function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQuestion?: string }) {
+  const [, setSearchParams] = useSearchParams()
+  const library = preparationPath('library', jobId ? { job: jobId, source: 'preparation' } : undefined)
   const [form] = Form.useForm()
   const [role, setRole] = useState('backend')
   const load = useCallback(async (signal: AbortSignal) => {
@@ -35,7 +38,6 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
   const questionId = Form.useWatch('questionId', form)
   const question = questions.data?.find((item) => item.id === questionId)
   const action = useCareerAction()
-  const [refresh, setRefresh] = useState(0)
   const [documentIds, setDocumentIds] = useState<string[]>([])
   const [skillId, setSkillId] = useState<string>()
 
@@ -44,7 +46,7 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
       <Card title="开始一轮面试">
         {questions.error && <Alert type="error" message={questions.error} action={<Button onClick={questions.retry}>重试</Button>} />}
         {questions.data?.length === 0 && <Alert type="info" message="当前岗位暂无可作答的题目"
-          action={<Link to="/career/questions">生成岗位模拟题</Link>} />}
+          action={<Link to={library}>生成岗位模拟题</Link>} />}
         <Form form={form} layout="vertical" initialValues={{ questionId: initialQuestion }} onFinish={(values: { jobId: string; answer: string }) => action.run(async () => {
           if (!question) return
           await action.submit('interview', {
@@ -53,7 +55,7 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
             skillId,
           }, careerWorkflow.interview)
           form.resetFields(['answer'])
-          setRefresh((n) => n + 1)
+          setSearchParams({ tab: 'review', job: jobId ?? values.jobId })
         })}>
           {!jobId && <>
             <Form.Item name="jobId" label="本次面试岗位" rules={[{ required: true }]}>
@@ -79,12 +81,19 @@ function InterviewForm({ jobId, initialQuestion }: { jobId?: string; initialQues
           <PreparationDocuments value={documentIds} onChange={setDocumentIds} skillId={skillId} onSkillChange={setSkillId} />
           <Space wrap>
             <Button htmlType="submit" type="primary" disabled={!question || !jobs?.length} loading={action.saving}>提交并生成复盘</Button>
-            <Link to="/career/questions">查看岗位题库</Link>
+            <Link to={library}>查看岗位题库</Link>
           </Space>
         </Form>
       </Card>
-      <Title level={3}>面试记录</Title>
-      <TaskHistory key={refresh} kind="INTERVIEW" jobId={jobId} render={(task) => task.interview && (
+    </>
+  )
+}
+
+export function InterviewHistory({ jobId }: { jobId?: string }) {
+  return (
+    <>
+      <Title level={4}>模拟面试复盘</Title>
+      <TaskHistory kind="INTERVIEW" jobId={jobId} render={(task) => task.interview && (
         <>
           <Paragraph strong>{task.interview.prompt}</Paragraph>
           <Paragraph style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{task.interview.answer}</Paragraph>
@@ -102,14 +111,11 @@ export default function MockInterviewPage() {
   const [params] = useSearchParams()
   const { job } = useCurrentJob()
   const linkedJob = params.get('job') ?? undefined
-  const jobId = job?.id ?? linkedJob
-  const initialQuestion = linkedJob === jobId ? params.get('question') ?? undefined : undefined
+  const jobId = linkedJob ?? job?.id
+  const initialQuestion = params.get('question') ?? undefined
   return (
-    <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
-      <div>
-        <Title level={2}>模拟面试</Title>
-        <Text type="secondary">围绕目标岗位完成一道题，用自己的话回答，再查看面试复盘。</Text>
-      </div>
+    <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
+      <Text type="secondary">围绕目标岗位完成一道题，用自己的话回答，再查看面试复盘。</Text>
       <InterviewForm key={`${jobId}:${initialQuestion}`} jobId={jobId} initialQuestion={initialQuestion} />
     </Space>
   )

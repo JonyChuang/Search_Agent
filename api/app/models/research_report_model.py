@@ -33,6 +33,10 @@ class ResearchReport(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     topic: Mapped[str] = mapped_column(Text)  # 用户原始一句话需求
+    job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    saved_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
+    )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)  # 生成的标题
     status: Mapped[str] = mapped_column(
         String(16), default=RESEARCH_STATUS_PENDING, index=True

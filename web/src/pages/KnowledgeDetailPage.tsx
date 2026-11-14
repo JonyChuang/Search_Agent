@@ -32,6 +32,7 @@ import { knowledgeBaseApi, type KnowledgeBase } from '@/api/knowledgeBases'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import MarkdownMessage from '@/components/MarkdownMessage'
 import { FileTypeIcon, StatusTag, formatSize } from './knowledge/helpers'
+import { preparationPath } from './career/paths'
 
 const { Dragger } = Upload
 const { Search } = Input
@@ -267,7 +268,7 @@ function DocTab({ kbId }: { kbId: string }) {
         </div>
       </div>
       <div className="kb-row-actions">
-        <Link to={`/career/plan?document=${encodeURIComponent(d.id)}`}>用于备考</Link>
+        <Link to={preparationPath('plan', { document: d.id })}>用于备考</Link>
         <Tooltip title="查看内容">
           <Button
             size="small"

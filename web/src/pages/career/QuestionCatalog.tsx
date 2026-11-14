@@ -3,6 +3,7 @@ import { Alert, Button, List, Select, Space, Spin, Tag, Typography } from 'antd'
 import { Link } from 'react-router-dom'
 import { practiceApi } from '@/api/practice'
 import { useCareerQuery } from './useCareerQuery'
+import { preparationPath } from './paths'
 
 export const roles: Record<string, string> = { backend: '后端开发', algorithm: '算法', llm: '大模型应用' }
 
@@ -11,10 +12,11 @@ export function roleLabel(role: string) {
 }
 
 export function practiceLink(questionId: string, version?: number, jobId?: string) {
-  const params = new URLSearchParams({ question: questionId })
-  if (version) params.set('version', String(version))
-  if (jobId) params.set('job', jobId)
-  return `/career/practice?${params}`
+  return preparationPath('practice', {
+    question: questionId,
+    ...(version ? { version: String(version) } : {}),
+    ...(jobId ? { job: jobId } : {}),
+  })
 }
 
 export function PracticeQuestionList({ questions, jobId }: { questions: Awaited<ReturnType<typeof practiceApi.questions>>; jobId?: string }) {
@@ -44,16 +46,16 @@ export function PracticeQuestionList({ questions, jobId }: { questions: Awaited<
   )
 }
 
-function Questions({ role }: { role?: string }) {
+function Questions({ role, jobId }: { role?: string; jobId?: string }) {
   const load = useCallback((signal: AbortSignal) => practiceApi.questions(role, signal), [role])
   const { data, error, retry } = useCareerQuery(load)
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
   if (!data) return <Spin />
 
-  return <PracticeQuestionList questions={data} />
+  return <PracticeQuestionList questions={data} jobId={jobId} />
 }
 
-export default function QuestionCatalog() {
+export default function QuestionCatalog({ jobId }: { jobId?: string }) {
   const [role, setRole] = useState<string>()
 
   return (
@@ -67,7 +69,7 @@ export default function QuestionCatalog() {
         options={Object.entries(roles).map(([value, label]) => ({ value, label }))}
         style={{ width: 200 }}
       />
-      <Questions key={role ?? 'all'} role={role} />
+      <Questions key={role ?? 'all'} role={role} jobId={jobId} />
     </>
   )
 }

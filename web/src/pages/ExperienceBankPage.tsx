@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { Alert, Button, Card, Empty, List, Space, Spin, Tabs, Tag, Typography } from 'antd'
-import { Link as RouteLink } from 'react-router-dom'
+import { Link as RouteLink, useSearchParams } from 'react-router-dom'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { practiceApi, type InterviewNote } from '@/api/practice'
 import { useCurrentJob } from './career/CurrentJob'
@@ -9,6 +9,7 @@ import TaskHistory from './career/TaskHistory'
 import PreparationDocuments from './career/PreparationDocuments'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
+import { preparationPath } from './career/paths'
 
 const { Paragraph, Text, Title, Link } = Typography
 
@@ -86,7 +87,10 @@ function JobPreparation({ jobId }: { jobId: string }) {
           </Space>
           <List dataSource={task.result.openQuestions} renderItem={(question, index) => (
             <List.Item actions={[
-              <RouteLink key="interview" to={`/career/interviews?job=${jobId}&question=${task.id}-${index}`}>开始作答</RouteLink>,
+              <RouteLink key="plan" to={preparationPath('plan', {
+                job: jobId, source: task.id, question: `${task.id}-${index}`,
+              })}>加入备考计划</RouteLink>,
+              <RouteLink key="interview" to={preparationPath('interview', { job: jobId, question: `${task.id}-${index}` })}>开始作答</RouteLink>,
             ]}>
               <List.Item.Meta title={question.prompt} description={<Tag color="purple">AI 模拟 · {question.topic}</Tag>} />
             </List.Item>
@@ -126,25 +130,27 @@ function JobDiscovery({ jobId }: { jobId: string }) {
   )
 }
 
-export default function ExperienceBankPage() {
-  const { job, loading } = useCurrentJob()
+export default function ExperienceBankPage({ jobId }: { jobId?: string }) {
+  const { loading } = useCurrentJob()
+  const [params, setParams] = useSearchParams()
+  const source = params.get('source')
+  const active = source === 'notes' || (jobId && ['recommended', 'discovery', 'preparation'].includes(source ?? ''))
+    ? source ?? 'questions' : 'questions'
   return (
-    <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
-      <div>
-        <Title level={2}>面经与题库</Title>
-        <Paragraph type="secondary">{job ? `${job.company} · ${job.title}` : '选择当前目标岗位，查看对应的面经和练习题。'}</Paragraph>
-      </div>
       <Card>
-        {loading ? <Spin /> : <Tabs items={[
-          { key: 'questions', label: '公开题库', children: <QuestionCatalog /> },
+        {loading ? <Spin /> : <Tabs activeKey={active} destroyOnHidden onChange={(key) => {
+          const next = new URLSearchParams(params)
+          next.set('source', key)
+          setParams(next, { replace: true })
+        }} items={[
+          { key: 'questions', label: '公开题库', children: <QuestionCatalog jobId={jobId} /> },
           { key: 'notes', label: '公开面经', children: <InterviewNotes /> },
-          ...(job ? [
-            { key: 'recommended', label: '岗位推荐', children: <JobRecommendations jobId={job.id} /> },
-            { key: 'discovery', label: '联网面经', children: <JobDiscovery jobId={job.id} /> },
-            { key: 'preparation', label: 'AI 模拟题', children: <JobPreparation jobId={job.id} /> },
+          ...(jobId ? [
+            { key: 'recommended', label: '岗位推荐', children: <JobRecommendations jobId={jobId} /> },
+            { key: 'discovery', label: '联网面经', children: <JobDiscovery jobId={jobId} /> },
+            { key: 'preparation', label: 'AI 模拟题', children: <JobPreparation jobId={jobId} /> },
           ] : []),
         ]} />}
       </Card>
-    </Space>
   )
 }

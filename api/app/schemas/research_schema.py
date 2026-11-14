@@ -6,8 +6,18 @@ from pydantic import BaseModel, Field
 
 class ResearchStartRequest(BaseModel):
     topic: str = Field(..., min_length=1, max_length=2000, description="一句话研究需求")
+    job_id: uuid.UUID | None = None
     # 检索范围：指定知识库 id 列表；为空则用用户「已启用检索」的库集合
     kb_ids: list[str] | None = None
+
+
+class CompanyResearchJob(BaseModel):
+    company: str
+    title: str
+    description: str
+    sourceName: str
+    sourceUrl: str | None
+    sourcedOn: str
 
 
 class SaveToKbRequest(BaseModel):

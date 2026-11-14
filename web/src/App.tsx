@@ -4,10 +4,9 @@ import HomePage from './pages/HomePage'
 import CareerHomePage from './pages/CareerHomePage'
 import ResumeWorkbenchPage from './pages/ResumeWorkbenchPage'
 import JobCompanyPage from './pages/JobCompanyPage'
-import ExperienceBankPage from './pages/ExperienceBankPage'
-import PracticePage from './pages/PracticePage'
-import TrainingPlanPage from './pages/TrainingPlanPage'
-import MockInterviewPage from './pages/MockInterviewPage'
+import JobWorkspacePage from './pages/JobWorkspacePage'
+import PreparationPage, { LegacyPreparationLink } from './pages/PreparationPage'
+import { CareerMemoryPage, CareerTasksPage } from './pages/CareerWorkspacePages'
 import { ApplicationAssistantPage, ApplicationBoardPage } from './pages/CareerApplicationsPage'
 import LoginPage from './pages/LoginPage'
 import ModelConfigPage from './pages/ModelConfigPage'
@@ -57,10 +56,14 @@ export default function App() {
             <Route path="workspace" element={<HomePage />} />
             <Route path="career/resume" element={<ResumeWorkbenchPage />} />
             <Route path="career/jobs" element={<JobCompanyPage />} />
-            <Route path="career/questions" element={<ExperienceBankPage />} />
-            <Route path="career/practice" element={<PracticePage />} />
-            <Route path="career/plan" element={<TrainingPlanPage />} />
-            <Route path="career/interviews" element={<MockInterviewPage />} />
+            <Route path="career/jobs/:jobId" element={<JobWorkspacePage />} />
+            <Route path="career/preparation" element={<PreparationPage />} />
+            <Route path="career/questions" element={<LegacyPreparationLink page="questions" />} />
+            <Route path="career/practice" element={<LegacyPreparationLink page="practice" />} />
+            <Route path="career/plan" element={<LegacyPreparationLink page="plan" />} />
+            <Route path="career/interviews" element={<LegacyPreparationLink page="interviews" />} />
+            <Route path="career/memory" element={<CareerMemoryPage />} />
+            <Route path="career/tasks" element={<CareerTasksPage />} />
             <Route path="career/apply" element={<ApplicationAssistantPage />} />
             <Route path="career/applications" element={<ApplicationBoardPage />} />
             <Route path="chat" element={<ChatPage />} />

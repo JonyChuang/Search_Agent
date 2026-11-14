@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  Alert,
   App,
   Button,
   Card,
@@ -30,7 +31,7 @@ import {
   ShareAltOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import MarkdownMessage from '@/components/MarkdownMessage'
 import {
   researchApi,
@@ -46,6 +47,8 @@ import {
 } from '@/api/research'
 
 import QualityCard from '@/components/research/QualityCard'
+import CompanyResearchForm from './career/CompanyResearchForm'
+import { preparationPath } from './career/paths'
 
 const { TextArea } = Input
 
@@ -85,15 +88,23 @@ const STEP_ICON: Record<string, string> = {
   write: '✍️',
 }
 
-export default function ResearchPage() {
+export default function ResearchPage({ jobId }: { jobId?: string }) {
   const { message } = App.useApp()
   const navigate = useNavigate()
+  const [params, setParams] = useSearchParams()
+  const [historyError, setHistoryError] = useState('')
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyTotal, setHistoryTotal] = useState(0)
   const [reports, setReports] = useState<ReportBrief[]>([])
   const [topic, setTopic] = useState('')
   const [running, setRunning] = useState(false)
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [polishing, setPolishing] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [savedDocument, setSavedDocument] = useState<string>()
+  const [researchError, setResearchError] = useState('')
+  const [submittedTopic, setSubmittedTopic] = useState('')
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
   const [shareOpen, setShareOpen] = useState(false)
   const [shareUrl, setShareUrl] = useState('')
@@ -108,6 +119,7 @@ export default function ResearchPage() {
   const [steps, setSteps] = useState<ResearchStep[]>([])
   const [liveText, setLiveText] = useState('')
   const [finalMd, setFinalMd] = useState<string | null>(null)
+  const [finalTitle, setFinalTitle] = useState('')
   const [detail, setDetail] = useState<ReportDetail | null>(null)
   const [loadingDetail, setLoadingDetail] = useState(false)
   // V0.0.5 ② Verifier Loop:实时进度 + 完成后的详情
@@ -125,21 +137,23 @@ export default function ResearchPage() {
 
   const loadReports = useCallback(async () => {
     try {
-      const res = await researchApi.list(1, 50)
+      const res = await researchApi.list(historyPage, 20, jobId)
       setReports(res.data.items)
-    } catch {
-      /* 忽略 */
+      setHistoryTotal(res.data.total)
+      setHistoryError('')
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : '无法读取研究报告')
     }
-  }, [])
+  }, [historyPage, jobId])
 
   useEffect(() => {
-    loadReports()
-    return () => abortRef.current?.abort()
+    void loadReports()
   }, [loadReports])
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   // 深链：?report=<id> 自动打开某份报告（来自任务运行历史/首页简报跳转）
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('report')
+    const id = params.get('report')
     if (id) openReport(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -168,15 +182,31 @@ export default function ResearchPage() {
     setSteps([])
     setLiveText('')
     setFinalMd(null)
+    setFinalTitle('')
     setDetail(null)
     setLoopDetail(null)
+    setSavedDocument(undefined)
+    setResearchError('')
+    setSubmittedTopic('')
+    setSubmittedAt(null)
+  }
+
+  function rememberReport(id?: string) {
+    if (!jobId) return
+    setParams((previous) => {
+      const next = new URLSearchParams(previous)
+      if (id) next.set('report', id)
+      else next.delete('report')
+      return next
+    }, { replace: true })
   }
 
   const buildHandlers = (): ResearchStreamHandlers => ({
     onMeta: (d) => {
       setCurrentId(d.report_id)
       currentIdRef.current = d.report_id
-      setReports((prev) => [
+      rememberReport(d.report_id)
+      if (historyPage === 1) setReports((prev) => [
         { id: d.report_id, topic: d.topic, title: null, status: 'planning', created_at: null },
         ...prev,
       ])
@@ -203,6 +233,7 @@ export default function ResearchPage() {
     onToken: (text) => setLiveText((t) => t + text),
     onReport: (d) => {
       setFinalMd(d.markdown)
+      setFinalTitle(d.title)
       setSources(d.sources)
     },
     onResume: (d) => {
@@ -229,9 +260,14 @@ export default function ResearchPage() {
         }, 500)
       }
     },
-    onIdle: () => setRunning(false),
+    onIdle: () => {
+      setRunning(false)
+      if (jobId) setResearchError('调研进度暂时不可用，可从调研记录重新打开。')
+    },
     onError: (msg) => {
-      message.error(msg)
+      if (jobId) setResearchError(msg)
+      else message.error(msg)
+      void loadReports()
       setRunning(false)
     },
     // V0.0.5 ② Verifier Loop 实时进度
@@ -305,30 +341,45 @@ export default function ResearchPage() {
       message.warning('请输入研究主题')
       return
     }
-    if (running) return
+    if (running || loadingDetail) return
     abortRef.current?.abort()
     const ac = new AbortController()
     abortRef.current = ac
     resetLive()
+    setSubmittedTopic(t)
+    setSubmittedAt(new Date().toISOString())
     setRunning(true)
     setFeedOpen(!isMobile)
     setCurrentId(null)
-    await streamResearch(t, buildHandlers(), ac.signal)
+    currentIdRef.current = null
+    await streamResearch(t, buildHandlers(), ac.signal, { jobId })
   }
 
   const openReport = async (id: string) => {
     setHistoryDrawerOpen(false)
-    if (running) {
+    if (running || loadingDetail) {
       message.warning('请等待当前研究完成')
       return
     }
     abortRef.current?.abort()
     resetLive()
-    setCurrentId(id)
+    setCurrentId(null)
+    currentIdRef.current = null
     setLoadingDetail(true)
     try {
       const res = await researchApi.detail(id)
       const d = res.data
+      if (jobId && d.job_id !== jobId) {
+        setResearchError('这份报告不属于当前岗位。')
+        rememberReport()
+        return
+      }
+      currentIdRef.current = id
+      setCurrentId(id)
+      rememberReport(id)
+      setSubmittedTopic(d.topic)
+      setSubmittedAt(d.created_at)
+      setSavedDocument(d.saved_document_id ?? undefined)
       if (RUNNING_STATUSES.includes(d.status)) {
         // 仍在进行中：订阅续传
         setRunning(true)
@@ -340,6 +391,7 @@ export default function ResearchPage() {
         subscribeResearchEvents(id, buildHandlers(), ac.signal)
       } else {
         setDetail(d)
+        if (jobId && d.status === 'failed') setResearchError(d.error_msg || '调研执行失败')
         setFinalMd(d.report_md)
         setSources(d.sources ?? [])
         setPlan(d.outline ?? null)
@@ -350,31 +402,40 @@ export default function ResearchPage() {
           .catch(() => setLoopDetail(null))
       }
     } catch {
-      message.error('加载报告失败')
+      if (jobId) {
+        setResearchError('加载报告失败，请从调研记录重试。')
+        rememberReport()
+      }
+      else message.error('加载报告失败')
     } finally {
       setLoadingDetail(false)
     }
   }
 
-  const newResearch = () => {
+  const newResearch = (keepTopic = false) => {
     setHistoryDrawerOpen(false)
-    if (running) {
+    if (running || loadingDetail) {
       message.warning('请等待当前研究完成')
       return
     }
     abortRef.current?.abort()
     resetLive()
     setCurrentId(null)
-    setTopic('')
+    currentIdRef.current = null
+    rememberReport()
+    setTopic(keepTopic ? submittedTopic : '')
   }
 
   const removeReport = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     try {
       await researchApi.remove(id)
-      setReports((prev) => prev.filter((r) => r.id !== id))
+      if (reports.length === 1 && historyPage > 1) setHistoryPage(historyPage - 1)
+      else void loadReports()
       if (currentId === id) {
         setCurrentId(null)
+        currentIdRef.current = null
+        rememberReport()
         resetLive()
       }
       message.success('已删除')
@@ -384,7 +445,7 @@ export default function ResearchPage() {
   }
 
   const displayMd = finalMd ?? detail?.report_md ?? liveText
-  const reportTitle = detail?.title || plan?.title || ''
+  const reportTitle = detail?.title || finalTitle || plan?.title || ''
 
   const downloadMd = () => {
     if (!displayMd) return
@@ -402,8 +463,9 @@ export default function ResearchPage() {
     setSaving(true)
     try {
       const res = await researchApi.saveToKb(currentId)
+      if (jobId) setSavedDocument(res.data.document_id)
       const kbName = res.data?.kb_name || '知识库'
-      message.success(`已存入「${kbName}」，正在解析入库`)
+      message.success(jobId ? `已存入「${kbName}」，可作为备考参考资料` : `已存入「${kbName}」，正在解析入库`)
     } catch (err) {
       const m = (err as { message?: string })?.message
       message.error(m || '存入失败')
@@ -488,17 +550,18 @@ export default function ResearchPage() {
   }
 
   const showReport = !!displayMd && displayMd.trim().length > 0
-  const canManage = !running && (detail?.status === 'done' || finalMd)
+  const canManage = !running && !researchError && (detail ? detail.status === 'done' : !!finalMd)
 
   const historyList = (
     <>
-      <Button type="primary" icon={<PlusOutlined />} block onClick={newResearch} style={{ marginBottom: 12 }}>
-        新建研究
+      <Button type="primary" icon={<PlusOutlined />} block onClick={() => newResearch()} style={{ marginBottom: 12 }}>
+        {jobId ? '新建调研' : '新建研究'}
       </Button>
+      {historyError && <Alert type="error" message={historyError} action={<Button size="small" onClick={loadReports}>重试</Button>} />}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {reports.length === 0 && (
+        {!historyError && reports.length === 0 && (
           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-            还没有研究报告，输入一句话开始吧。
+            {jobId ? '当前岗位暂无调研记录' : '还没有研究报告，输入一句话开始吧。'}
           </Typography.Text>
         )}
         {reports.map((r) => (
@@ -515,8 +578,19 @@ export default function ResearchPage() {
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div
+                <button type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    void openReport(r.id)
+                  }}
                   style={{
+                    display: 'block',
+                    border: 0,
+                    background: 'none',
+                    textAlign: 'left',
+                    padding: 0,
+                    cursor: 'pointer',
+                    maxWidth: '100%',
                     fontWeight: 500,
                     fontSize: 13,
                     overflow: 'hidden',
@@ -525,7 +599,7 @@ export default function ResearchPage() {
                   }}
                 >
                   {r.title || r.topic}
-                </div>
+                </button>
                 <div style={{ marginTop: 4 }}>
                   {RUNNING_STATUSES.includes(r.status) ? (
                     <Tag color="processing" style={{ marginInlineEnd: 0 }}>
@@ -543,20 +617,24 @@ export default function ResearchPage() {
                 </div>
               </div>
               <Tooltip title="删除">
-                <DeleteOutlined
+                <Button type="text" size="small" aria-label="删除报告" icon={<DeleteOutlined />}
+                  disabled={RUNNING_STATUSES.includes(r.status) || loadingDetail}
                   onClick={(e) => removeReport(r.id, e)}
-                  style={{ color: '#A8A9AA' }}
                 />
               </Tooltip>
             </div>
           </Card>
         ))}
       </div>
+      {historyTotal > 20 && <Space style={{ marginTop: 12 }}>
+        <Button size="small" disabled={historyPage <= 1} onClick={() => setHistoryPage(historyPage - 1)}>上一页</Button>
+        <Button size="small" disabled={historyPage * 20 >= historyTotal} onClick={() => setHistoryPage(historyPage + 1)}>下一页</Button>
+      </Space>}
     </>
   )
 
   return (
-    <div className="fluid-page research-page" style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+    <div className={jobId ? 'research-page' : 'fluid-page research-page'} style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
       {/* 左：历史报告（桌面端常驻；手机端收进抽屉） */}
       <div className="research-history" style={{ flex: '0 0 260px', minWidth: 220, maxWidth: '100%' }}>
         {historyList}
@@ -577,7 +655,7 @@ export default function ResearchPage() {
       <div style={{ flex: 1, minWidth: 0, width: '100%' }}>
         {/* 手机端顶部工具条：新建 / 历史 */}
         <div className="research-mobile-bar">
-          <Button icon={<PlusOutlined />} onClick={newResearch}>
+          <Button icon={<PlusOutlined />} onClick={() => newResearch()}>
             新建
           </Button>
           <Button icon={<UnorderedListOutlined />} onClick={() => setHistoryDrawerOpen(true)}>
@@ -586,7 +664,20 @@ export default function ResearchPage() {
         </div>
 
         {/* 输入区（初始态：居中引导） */}
-        {!showReport && !running && (
+        {jobId && researchError && <Alert type="error" showIcon message={researchError}
+          style={{ marginBottom: 12 }} />}
+        {jobId && submittedTopic && (currentId || running) && (
+          <Card size="small" title="本次调研要求" style={{ marginBottom: 12 }}
+            extra={!running && <Button type="link" onClick={() => newResearch(true)}>修改要求再调研</Button>}>
+            <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginBottom: 4 }}>
+              {submittedTopic}
+            </Typography.Paragraph>
+            {submittedAt && <Typography.Text type="secondary">发起于 {new Date(submittedAt).toLocaleString('zh-CN')}</Typography.Text>}
+          </Card>
+        )}
+        {!showReport && !running && !loadingDetail && (jobId
+          ? (!currentId || !submittedTopic) && <CompanyResearchForm topic={topic} onChange={setTopic} onSubmit={startResearch} />
+          : (
           <div className="research-hero">
             <div className="research-hero-icon">
               <FileSearchOutlined />
@@ -659,7 +750,7 @@ export default function ResearchPage() {
               ))}
             </div>
           </div>
-        )}
+        ))}
 
         {loadingDetail && (
           <div style={{ textAlign: 'center', padding: 40 }}>
@@ -802,19 +893,21 @@ export default function ResearchPage() {
                       {currentId && !running && (
                         <Button
                           icon={<HistoryOutlined />}
-                          onClick={() => navigate(`/traces?task_id=${currentId}`)}
+                          onClick={() => navigate(`${jobId ? '/career/tasks' : '/traces'}?task_id=${currentId}`)}
                         >
                           执行轨迹
                         </Button>
                       )}
-                      <Button
+                      {jobId && savedDocument ? (
+                        <Link to={preparationPath('plan', { document: savedDocument, job: jobId })}>用报告制定备考计划</Link>
+                      ) : <Button
                         type="primary"
                         icon={<SaveOutlined />}
                         loading={saving}
                         onClick={saveToKb}
                       >
-                        存入知识库
-                      </Button>
+                        {jobId ? '存入我的资料' : '存入知识库'}
+                      </Button>}
                     </Space>
                   )
                 }

@@ -76,6 +76,7 @@ class KnowledgeBaseRepository:
         icon: str | None = None,
         color: str | None = None,
         chat_enabled: bool = False,
+        commit: bool = True,
     ) -> KnowledgeBase:
         """按名称取知识库，不存在则创建（用于「深度研究报告」等专用库）。"""
         kb = await self.get_by_name(user_id, name)
@@ -90,7 +91,11 @@ class KnowledgeBaseRepository:
             is_default=False,
             chat_enabled=chat_enabled,
         )
-        return await self.create(kb)
+        if commit:
+            return await self.create(kb)
+        self.session.add(kb)
+        await self.session.flush()
+        return kb
 
     async def list_chat_enabled_ids(self, user_id: uuid.UUID) -> list[str]:
         """对话检索范围：所有 chat_enabled=True 的知识库 id（字符串）。"""

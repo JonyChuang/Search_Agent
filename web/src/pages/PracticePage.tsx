@@ -3,9 +3,10 @@ import { Alert, Button, Card, Collapse, List, Radio, Space, Spin, Tabs, Tag, Typ
 import { Link, useSearchParams } from 'react-router-dom'
 import { practiceApi, type Attempt, type Question, type Submission } from '@/api/practice'
 import { useAuthStore } from '@/stores/authStore'
-import QuestionCatalog, { PracticeQuestionList, practiceLink, roleLabel } from './career/QuestionCatalog'
+import { practiceLink, roleLabel } from './career/QuestionCatalog'
 import { useCurrentJob } from './career/CurrentJob'
 import { useCareerQuery } from './career/useCareerQuery'
+import { preparationPath } from './career/paths'
 
 const { Paragraph, Text, Title } = Typography
 const choices = ['A', 'B', 'C', 'D']
@@ -23,6 +24,7 @@ function Feedback({ attempt }: { attempt: Attempt }) {
 }
 
 function AnswerForm({ question, storageKey, jobId }: { question: Question; storageKey: string; jobId?: string }) {
+  const scope = jobId ? { job: jobId } : undefined
   const [pending, setPending] = useState<Submission | undefined>(() => {
     const saved = sessionStorage.getItem(storageKey)
     return saved ? JSON.parse(saved) as Submission : undefined
@@ -58,7 +60,7 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
 
   return (
     <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
-      <Link to="/career/practice">返回选题</Link>
+      <Link to={preparationPath('library', scope)}>返回面经与题库</Link>
       <Space wrap>
         <Tag>{roleLabel(question.role)}</Tag>
         <Text type="secondary">{question.topic} · 单选题</Text>
@@ -78,7 +80,7 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
           <Typography.Link href={question.sourceUrl} target="_blank" rel="noopener noreferrer">
             {question.sourceName}
           </Typography.Link>
-          <Link to={result.correct ? '/career/practice' : '/career/practice?tab=wrong'}>
+          <Link to={preparationPath(result.correct ? 'library' : 'review', scope)}>
             {result.correct ? '继续选题' : '查看错题本'}
           </Link>
         </>
@@ -99,7 +101,7 @@ function SelectedQuestion({ id, version, jobId }: { id: string; version?: string
     return (
       <Space direction="vertical">
         <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
-        <Link to="/career/practice">返回选题</Link>
+        <Link to={preparationPath('library', jobId ? { job: jobId } : undefined)}>返回面经与题库</Link>
       </Space>
     )
   }
@@ -120,7 +122,7 @@ function WrongQuestions({ jobId }: { jobId?: string }) {
       rowKey="questionId"
       locale={{ emptyText: '还没有错题' }}
       renderItem={(question) => (
-        <List.Item actions={[<Link key="review" to={practiceLink(question.questionId)}>重新作答</Link>]}>
+        <List.Item actions={[<Link key="review" to={practiceLink(question.questionId, undefined, jobId)}>重新作答</Link>]}>
           <List.Item.Meta
             title={question.prompt}
             description={
@@ -163,56 +165,37 @@ function HistoryPage({ page, onPage, jobId }: { page: number; onPage: (page: num
   )
 }
 
-function JobPractice({ jobId }: { jobId: string }) {
-  const load = useCallback((signal: AbortSignal) => practiceApi.recommendations(jobId, signal), [jobId])
-  const { data, error, retry } = useCareerQuery(load)
-  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
-  if (!data) return <Spin />
-  return (
-    <>
-      <PracticeQuestionList questions={data.questions} jobId={jobId} />
-      <Link to="/career/questions">查看公开题库和岗位模拟题</Link>
-    </>
-  )
-}
-
-export default function PracticePage() {
+export default function PracticePage({ review = false }: { review?: boolean }) {
   const [params, setParams] = useSearchParams()
   const { job } = useCurrentJob()
   const [page, setPage] = useState(1)
   const version = params.get('version') ?? undefined
   const linkedJob = params.get('job') ?? undefined
-  const question = job && linkedJob && job.id !== linkedJob ? null : params.get('question')
-  const tab = params.get('tab')
-  const activeTab = tab === 'wrong' || tab === 'history' ? tab : 'practice'
+  const jobId = linkedJob ?? job?.id
+  const scope = jobId ? { job: jobId } : undefined
+  const question = params.get('question')
+  const section = params.get('section')
 
-  return (
-    <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
-      <div>
-        <Title level={2}>刷题练习</Title>
-        <Paragraph type="secondary">按方向选题，提交后查看解析。答错的题目会进入错题本。</Paragraph>
-      </div>
-      <Card>
-        <Tabs
-          activeKey={activeTab}
-          destroyOnHidden
-          onChange={(key) => {
-            setPage(1)
-            setParams(key === 'practice' ? {} : { tab: key })
-          }}
-          items={[
-            {
-              key: 'practice',
-              label: '选题作答',
-              children: question
-                ? <SelectedQuestion key={`${question}:${version}`} id={question} version={version} jobId={job?.id ?? linkedJob} />
-                : job ? <JobPractice jobId={job.id} /> : <QuestionCatalog />,
-            },
-            { key: 'wrong', label: '错题本', children: <WrongQuestions jobId={job?.id} /> },
-            { key: 'history', label: '练习记录', children: <HistoryPage key={page} page={page} onPage={setPage} jobId={job?.id} /> },
-          ]}
-        />
-      </Card>
-    </Space>
-  )
+  if (!review) return <Card>
+    {question
+      ? <SelectedQuestion key={`${question}:${version}:${jobId}`} id={question} version={version} jobId={jobId} />
+      : <>
+        <Paragraph>可从备考计划或题库选一道题，也可以直接开始一轮模拟面试。</Paragraph>
+        <Space wrap>
+          <Link to={preparationPath('plan', scope)}>查看备考计划</Link>
+          <Link to={preparationPath('library', scope)}>从题库选题</Link>
+          <Link to={preparationPath('interview', scope)}>开始模拟面试</Link>
+        </Space>
+      </>}
+  </Card>
+
+  return <Card title="客观题复盘">
+    <Tabs activeKey={section === 'history' ? 'history' : 'wrong'} destroyOnHidden onChange={(key) => {
+      setPage(1)
+      setParams({ tab: 'review', section: key, ...(linkedJob ? { job: linkedJob } : {}) })
+    }} items={[
+      { key: 'wrong', label: '错题本', children: <WrongQuestions jobId={jobId} /> },
+      { key: 'history', label: '练习记录', children: <HistoryPage key={`${jobId}:${page}`} page={page} onPage={setPage} jobId={jobId} /> },
+    ]} />
+  </Card>
 }

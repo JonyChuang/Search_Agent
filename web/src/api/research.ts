@@ -35,6 +35,7 @@ export interface ResearchPlan {
 
 export interface ReportBrief {
   id: string
+  job_id?: string | null
   topic: string
   title: string | null
   status: ResearchStatus
@@ -46,6 +47,7 @@ export interface ReportDetail extends ReportBrief {
   outline: ResearchPlan | null
   sources: ResearchSource[]
   error_msg: string | null
+  saved_document_id?: string | null
 }
 
 export interface ResearchStep {
@@ -159,9 +161,9 @@ export interface ResearchStreamHandlers {
 }
 
 export const researchApi = {
-  list(page = 1, pageSize = 20) {
+  list(page = 1, pageSize = 20, jobId?: string) {
     return client.get<unknown, Wrapped<{ items: ReportBrief[]; total: number }>>(
-      `/research?page=${page}&page_size=${pageSize}`,
+      '/research', { params: { page, page_size: pageSize, job_id: jobId } },
     )
   },
   detail(id: string) {
@@ -171,7 +173,7 @@ export const researchApi = {
     return client.delete<unknown, Wrapped<null>>(`/research/${id}`)
   },
   saveToKb(id: string, kbId?: string | null) {
-    return client.post<unknown, Wrapped<{ document_id: string; kb_id: string; kb_name: string }>>(
+    return client.post<unknown, Wrapped<{ document_id: string; kb_id: string | null; kb_name: string }>>(
       `/research/${id}/save-to-kb`,
       { kb_id: kbId ?? null },
     )
@@ -303,6 +305,7 @@ function dispatch(
 async function consumeSSE(
   resp: Response,
   h: ResearchStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!resp.ok || !resp.body) {
     h.onError?.(`请求失败（HTTP ${resp.status}）`)
@@ -311,6 +314,7 @@ async function consumeSSE(
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let ended = false
   while (true) {
     let chunk: ReadableStreamReadResult<Uint8Array>
     try {
@@ -338,8 +342,10 @@ async function consumeSSE(
         continue
       }
       dispatch(event, payload, h)
+      if (event === 'done' || event === 'error' || event === 'idle') ended = true
     }
   }
+  if (!ended && !signal?.aborted) h.onError?.('连接已中断，可从历史报告重新打开查看进度。')
 }
 
 // 发起研究并流式推进度（POST SSE）
@@ -347,7 +353,7 @@ export async function streamResearch(
   topic: string,
   handlers: ResearchStreamHandlers,
   signal?: AbortSignal,
-  kbIds?: string[] | null,
+  options?: { kbIds?: string[] | null; jobId?: string },
 ): Promise<void> {
   const token = localStorage.getItem('access_token')
   let resp: Response
@@ -358,14 +364,14 @@ export async function streamResearch(
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ topic, kb_ids: kbIds ?? null }),
+      body: JSON.stringify({ topic, kb_ids: options?.kbIds ?? null, job_id: options?.jobId }),
       signal,
     })
   } catch {
-    handlers.onError?.('网络错误')
+    if (!signal?.aborted) handlers.onError?.('网络错误')
     return
   }
-  await consumeSSE(resp, handlers)
+  await consumeSSE(resp, handlers, signal)
 }
 
 // 重连续传：订阅进行中的研究（GET SSE），已结束会回放最终报告
@@ -383,7 +389,8 @@ export async function subscribeResearchEvents(
       signal,
     })
   } catch {
+    if (!signal?.aborted) handlers.onError?.('无法连接调研进度，请重新打开报告。')
     return
   }
-  await consumeSSE(resp, handlers)
+  await consumeSSE(resp, handlers, signal)
 }

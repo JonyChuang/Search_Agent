@@ -1,7 +1,7 @@
 """深度研究路由：发起流式研究 + 续传 + 报告管理 + 存知识库。"""
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,13 +65,14 @@ async def revoke_report_share(
 @router.post("/stream")
 async def start_research_stream(
     body: ResearchStartRequest,
+    authorization: str = Header(default=""),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     """发起一次深度研究并 SSE 流式推进度（首事件 meta 带 report_id）。"""
     service = ResearchService(session)
     return StreamingResponse(
-        service.stream_research(user.id, body),
+        service.stream_research(user.id, body, authorization),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
@@ -96,10 +97,11 @@ async def research_resume_events(
 async def list_reports(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    job_id: uuid.UUID | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    items, total = await ResearchService(session).list_reports(user.id, page, page_size)
+    items, total = await ResearchService(session).list_reports(user.id, page, page_size, job_id)
     return success({"items": items, "total": total})
 
 

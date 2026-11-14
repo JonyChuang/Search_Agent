@@ -88,7 +88,7 @@ function TrustTag({ confidence }: { confidence?: number | null }) {
   )
 }
 
-export default function MemoryPage() {
+export default function MemoryPage({ embedded = false }: { embedded?: boolean }) {
   const [mode, setMode] = useState<
     'profile' | 'community' | 'timeline' | 'search' | 'review'
   >('profile')
@@ -113,7 +113,7 @@ export default function MemoryPage() {
   ]
 
   return (
-    <div className="fluid-page">
+    <div className={embedded ? undefined : 'fluid-page'}>
       <Card
         title="记忆"
         className="memory-card"

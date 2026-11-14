@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Alert, Button, Form, Input } from 'antd'
+import { Alert, Button, Form, Input, Spin } from 'antd'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { useCareerQuery } from './useCareerQuery'
 import { useCareerAction } from './useCareerAction'
@@ -9,7 +9,7 @@ export default function JobPreparationMemory({ jobId }: { jobId: string }) {
   const memory = useCareerQuery(load)
   const action = useCareerAction()
   if (memory.error) return <Alert type="error" message={memory.error} action={<Button onClick={memory.retry}>重试</Button>} />
-  if (!memory.data) return null
+  if (!memory.data) return <Spin aria-label="正在读取备考偏好" />
   const entry = memory.data
   return (
     <Form key={entry.revision} layout="vertical" initialValues={{ notes: entry.notes ?? '' }}

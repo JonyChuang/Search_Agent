@@ -5,6 +5,7 @@ import {
   BookOutlined,
   CommentOutlined,
   ClockCircleOutlined,
+  ClusterOutlined,
   HistoryOutlined,
   FileTextOutlined,
   FileSearchOutlined,
@@ -13,6 +14,7 @@ import {
   MenuUnfoldOutlined,
   MoreOutlined,
   PlusOutlined,
+  ReadOutlined,
   RobotOutlined,
   SearchOutlined,
   SettingOutlined,
@@ -51,18 +53,15 @@ const menuItems = [
     type: 'group' as const,
     label: '求职准备',
     children: [
-      { key: '/career/resume', icon: <FileTextOutlined />, label: '简历与经历' },
       { key: '/career/jobs', icon: <FileSearchOutlined />, label: '岗位与公司' },
-      { key: '/knowledge', icon: <BookOutlined />, label: '我的资料' },
+      { key: '/career/resume', icon: <FileTextOutlined />, label: '简历与经历' },
     ],
   },
   {
     type: 'group' as const,
-    label: '面试训练',
+    label: '面试备考',
     children: [
-      { key: '/career/questions', label: '面经与题库' },
-      { key: '/career/practice', label: '刷题练习' },
-      { key: '/career/interviews', label: '模拟面试' },
+      { key: '/career/preparation', icon: <ReadOutlined />, label: '备考中心' },
     ],
   },
   {
@@ -71,13 +70,15 @@ const menuItems = [
     children: [
       { key: '/career/apply', label: '网申助手' },
       { key: '/career/applications', label: '投递看板' },
-      { key: '/career/plan', label: '岗位训练计划' },
     ],
   },
   {
     type: 'group' as const,
     label: '个人工作区',
     children: [
+      { key: '/knowledge', icon: <BookOutlined />, label: '我的资料' },
+      { key: '/career/memory', icon: <ClusterOutlined />, label: '求职记忆' },
+      { key: '/career/tasks', icon: <HistoryOutlined />, label: '任务记录' },
       { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
       { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
       { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
@@ -121,6 +122,10 @@ function MainLayoutContent() {
   const location = useLocation()
   const { job } = useCurrentJob()
   const careerPage = location.pathname === '/' || location.pathname.startsWith('/career/')
+  const jobWorkspace = location.pathname.startsWith('/career/jobs/')
+  const menuKey = jobWorkspace ? '/career/jobs'
+    : location.pathname.startsWith('/knowledge-bases/') ? '/knowledge'
+    : location.pathname
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const isMobile = useIsMobile()
@@ -245,7 +250,7 @@ function MainLayoutContent() {
         onOpenChange={(keys) => {
           if (!mini) setSettingsOpen(keys.includes('settings'))
         }}
-        selectedKeys={[location.pathname]}
+        selectedKeys={[menuKey]}
         items={items}
         onClick={({ key }) => navigate(key)}
         style={{ borderInlineEnd: 'none', background: 'transparent' }}
@@ -516,8 +521,8 @@ function MainLayoutContent() {
               padding: isMobile ? 14 : 24,
             }}
           >
-            {careerPage && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
-            <Outlet key={careerPage ? job?.id : undefined} />
+            {careerPage && !jobWorkspace && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
+            <Outlet key={careerPage && !jobWorkspace ? job?.id : undefined} />
           </Content>
         </Layout>
         {immersive && <MusicPlayer />}

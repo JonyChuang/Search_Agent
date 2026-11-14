@@ -65,6 +65,15 @@ class CareerTasks {
             }
             if (input.preparationId() != null) {
                 preparation(user, job.id(), input.preparationId());
+                if (input.preferredQuestion() != null) {
+                    if (!input.preferredQuestion().matches(input.preparationId() + "-[0-4]")) {
+                        throw new ResponseStatusException(BAD_REQUEST, "指定题目不属于所选模拟题批次");
+                    }
+                    openQuestion(user, job.id(), input.preferredQuestion(), 1);
+                    context.put("preferredQuestion", input.preferredQuestion());
+                }
+            } else if (input.preferredQuestion() != null) {
+                throw new ResponseStatusException(BAD_REQUEST, "请指定模拟题批次");
             } else if (input.role() == null && practice.recommendations(job.company(), job.title(),
                     jobSnapshot.get("jd"), jobSnapshot.get("skills")).questions().isEmpty()) {
                 throw new ResponseStatusException(CONFLICT, "请先在面经与题库生成该岗位的模拟题");
@@ -252,6 +261,10 @@ class CareerTasks {
                     .filter(q -> q.path("id").asText().equals(ref.id()) && q.path("version").asInt() == ref.version())
                     .findFirst().orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "训练题目或版本无效"));
         }).toList();
+        var preferred = row.context().path("preferredQuestion").asText(null);
+        if (preferred != null && !ids.contains(preferred)) {
+            throw new ResponseStatusException(BAD_REQUEST, "计划必须包含用户指定的题目");
+        }
         var result = json.valueToTree(Map.of("analysis", input.analysis(), "steps", input.steps(),
                 "questions", selected));
         var saved = store.checkpointDraft(row, result).map(CareerTaskStore.Row::trainingDraft)
@@ -332,6 +345,8 @@ class CareerTasks {
     record Training(@NotNull UUID requestId, @NotNull UUID jobId,
             @Pattern(regexp = "backend|algorithm|llm") String role,
             @JsonInclude(JsonInclude.Include.NON_NULL) UUID preparationId,
+            @JsonInclude(JsonInclude.Include.NON_NULL)
+            @Pattern(regexp = "[a-z0-9-]{1,64}") String preferredQuestion,
             @JsonInclude(JsonInclude.Include.NON_EMPTY) @Size(max = 3) List<@NotNull UUID> documentIds,
             @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillId) {}
     record Review(@NotNull UUID requestId, @NotNull UUID planId) {}

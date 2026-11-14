@@ -82,7 +82,7 @@ const TASK_TYPE_COLORS: Record<string, string> = {
   repair: 'magenta',
 }
 
-export default function TracesPage() {
+export default function TracesPage({ embedded = false }: { embedded?: boolean }) {
   const { message } = App.useApp()
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
@@ -218,7 +218,7 @@ export default function TracesPage() {
   }, [items])
 
   return (
-    <div className="fluid-page">
+    <div className={embedded ? undefined : 'fluid-page'}>
       {/* Agent 运行监控 ——— V0.0.5 从首页迁过来,与执行轨迹列表组成「Agent 运行视图」 */}
       <CostCard />
       {loopHealth && loopHealth.total > 0 && (

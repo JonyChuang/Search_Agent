@@ -1,7 +1,9 @@
 import { Button, Col, Form, Input, Row, Space, Tag, Typography } from 'antd'
+import { Link as RouteLink } from 'react-router-dom'
 import { careerApi, type JobInput } from '@/api/career'
 import CareerRecordList from './career/CareerRecordList'
 import { useCurrentJob } from './career/CurrentJob'
+import { jobPath } from './career/paths'
 
 const { Link, Paragraph, Text, Title } = Typography
 
@@ -11,7 +13,7 @@ export default function JobCompanyPage() {
     <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
       <div>
         <Title level={2}>岗位与公司</Title>
-        <Paragraph type="secondary">手动录入目标岗位的招聘描述、来源和记录日期，方便后续准备。</Paragraph>
+        <Paragraph type="secondary">保存目标岗位的招聘信息，进入岗位详情后可按自己的问题发起公司调研。</Paragraph>
       </div>
       <CareerRecordList<JobInput>
         label="岗位"
@@ -36,6 +38,7 @@ export default function JobCompanyPage() {
               {entry.description}
             </Paragraph>
             <Space wrap>
+              <RouteLink to={jobPath(entry.id)}>公司调研</RouteLink>
               {entry.sourceUrl
                 ? <Link href={entry.sourceUrl} target="_blank" rel="noopener noreferrer">{entry.sourceName}</Link>
                 : <Text>{entry.sourceName}</Text>}

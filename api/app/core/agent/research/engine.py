@@ -159,6 +159,8 @@ async def run_research(
     topic: str,
     kb_ids: list[str] | None = None,
     report_id: uuid.UUID | None = None,
+    *,
+    public_only: bool = False,
 ) -> AsyncGenerator[dict, None]:
     """执行一次深度研究（v2：规划→检索→逐源提炼→反思补搜→大纲整理→分节写作→汇总）。
 
@@ -173,6 +175,7 @@ async def run_research(
         topic: 研究主题
         kb_ids: 知识库 id 过滤(None = 不限)
         report_id: 关联的 research_reports.id,Verifier Loop 用它关联 loop_runs(可选)
+        public_only: 仅检索公开网页
     """
     from app.core.llm.chat_model import (
         build_default_chat_model,
@@ -203,7 +206,7 @@ async def run_research(
         # ── 1. 规划（多视角子问题）──
         yield {"type": "status", "phase": "planning", "detail": "正在规划研究提纲与多视角检索策略…"}
         async with tracer.span("规划:多视角子问题", span_type="planner") as sp:
-            plan = await make_plan(model, topic)
+            plan = await make_plan(model, topic, require_queries=public_only)
             sp.set_attribute("section_count", len(plan.sections))
             sp.set_attribute("query_count", len(plan.queries))
         headings = [s.heading for s in plan.sections]
@@ -216,6 +219,8 @@ async def run_research(
 
         # ── 检索辅助（一轮：四源并行 + 续编引用号）──
         async def _retrieve(emit, queries: list[str], start_index: int) -> list[Source]:
+            if public_only:
+                queries = [query for query in queries if len(query) <= 300 and "\n" not in query]
             async with tracer.span(
                 f"检索:{len(queries)} 个角度",
                 span_type="retriever",
@@ -226,9 +231,14 @@ async def run_research(
                     provider, api_key = ws
                     try:
                         async with tracer.span("检索:联网", span_type="tool_call", attributes={"comet.tool.name": "web_search", "comet.tool.provider": provider}):
-                            collected += await gather_web_sources(provider, api_key, queries, emit=emit)
+                            collected += await gather_web_sources(
+                                provider, api_key, queries, emit=emit, add_current_month=not public_only
+                            )
                     except Exception as e:
                         logger.warning("研究联网检索整体失败（继续）: %s", e)
+                if public_only:
+                    rsp.set_payload("source_count", len(collected))
+                    return assign_indices(collected, start=start_index)
                 try:
                     async with tracer.span("检索:知识库", span_type="tool_call", attributes={"comet.tool.name": "kb_search"}):
                         collected += await gather_kb_sources(session, user_id, queries, kb_ids, emit=emit)
@@ -254,6 +264,9 @@ async def run_research(
         async for ev in _pump(h1, lambda emit: _retrieve(emit, plan.queries, 1)):
             yield ev
         sources: list[Source] = h1.get("result") or []
+        if public_only and not sources:
+            yield {"type": "error", "message": "没有检索到可用的公开资料。请检查联网搜索配置或调整调研要求。"}
+            return
         yield {"type": "sources", "sources": _source_brief(sources)}
 
         # ── 3. 逐源提炼（v2 核心：原始资料 → 带来源号的要点）──

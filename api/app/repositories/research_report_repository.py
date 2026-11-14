@@ -23,11 +23,13 @@ class ResearchReportRepository:
         return report
 
     async def get(
-        self, user_id: uuid.UUID, report_id: uuid.UUID
+        self, user_id: uuid.UUID, report_id: uuid.UUID, *, lock: bool = False
     ) -> ResearchReport | None:
         stmt = select(ResearchReport).where(
             ResearchReport.id == report_id, ResearchReport.user_id == user_id
         )
+        if lock:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def get_by_id(self, report_id: uuid.UUID) -> ResearchReport | None:
@@ -36,9 +38,11 @@ class ResearchReportRepository:
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
     async def list_paged(
-        self, user_id: uuid.UUID, page: int, page_size: int
+        self, user_id: uuid.UUID, page: int, page_size: int, job_id: uuid.UUID | None = None
     ) -> tuple[list[ResearchReport], int]:
         base = select(ResearchReport).where(ResearchReport.user_id == user_id)
+        if job_id is not None:
+            base = base.where(ResearchReport.job_id == job_id)
         total = await self.session.scalar(
             select(func.count()).select_from(base.subquery())
         )
