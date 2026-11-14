@@ -1,12 +1,14 @@
 import { Alert, Space, Spin, Tabs, Typography } from 'antd'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
-import { useCurrentJob } from './career/CurrentJob'
+import { CurrentJobSelect, useCurrentJob } from './career/CurrentJob'
 import { jobPath, preparationPath } from './career/paths'
 import TaskHistory from './career/TaskHistory'
 import ExperienceBankPage from './ExperienceBankPage'
 import MockInterviewPage, { InterviewHistory } from './MockInterviewPage'
 import PracticePage from './PracticePage'
 import TrainingPlanPage from './TrainingPlanPage'
+import WorkspaceHero from './career/WorkspaceHero'
+import styles from './career/workspace.module.css'
 
 export function LegacyPreparationLink({ page }: { page: 'questions' | 'practice' | 'plan' | 'interviews' }) {
   const [params] = useSearchParams()
@@ -31,18 +33,19 @@ export default function PreparationPage() {
   const scope = job ? { job: job.id } : undefined
 
   return (
-    <Space direction="vertical" size="middle" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
-      <div>
-        <Typography.Title level={2} style={{ marginBottom: 6 }}>备考中心</Typography.Title>
-        <Space wrap>
-          <Typography.Text type="secondary">{job ? `${job.company} · ${job.title}` : '选择目标岗位以查看定向训练，或直接浏览公开资料。'}</Typography.Text>
-          {job && <Link to={jobPath(job.id)}>查看岗位详情</Link>}
-        </Space>
-      </div>
+    <div className={styles.workspace}>
+      <WorkspaceHero section="面试备考" title="备考中心"
+        description="继续当前岗位的训练，或从面经与题库添加下一项练习。" actions={<>
+          <small>{requestedJobId && requestedJobId !== currentJob?.id ? '本页备考岗位' : '当前目标岗位'}</small>
+          {requestedJobId && requestedJobId !== currentJob?.id && job
+            ? <><strong>{job.company} · {job.title}</strong><Link to={preparationPath(active)}>切回当前目标</Link></>
+            : <CurrentJobSelect inHero />}
+          <Link to={job ? jobPath(job.id) : '/career/jobs'}>{job ? '查看岗位详情' : '管理岗位'}</Link>
+        </>} />
       {loading ? <Spin aria-label="正在读取岗位" /> : requestedJobId && !job ? (
         <Alert type="warning" message={error || '链接中的岗位不存在或不可访问。'}
           action={<Link to={preparationPath(active)}>返回当前岗位</Link>} />
-      ) : <Tabs activeKey={active === 'interview' ? 'practice' : active} destroyOnHidden
+      ) : <Tabs className={styles.tabs} activeKey={active === 'interview' ? 'practice' : active} destroyOnHidden
         onChange={(key) => setParams({ tab: key, ...(requestedJobId ? { job: requestedJobId } : {}) })}
         items={[
           { key: 'plan', label: '备考计划', children: <TrainingPlanPage
@@ -64,6 +67,6 @@ export default function PreparationPage() {
             <TaskHistory key={job?.id} kind="REVIEW" jobId={job?.id} />
           </Space> },
         ]} />}
-    </Space>
+    </div>
   )
 }

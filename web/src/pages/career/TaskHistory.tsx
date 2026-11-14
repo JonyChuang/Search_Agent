@@ -19,14 +19,24 @@ const trainingStepLabels = {
   COMPLETE: '计划已保存',
 }
 
-export default function TaskHistory({ kind, jobId, render }: {
+export default function TaskHistory({ kind, jobId, render, renderTask, layout, emptyText = '暂无任务', refresh = 0 }: {
   kind: TaskKind; jobId?: string; render?: (task: CareerTask) => ReactNode
+  renderTask?: (task: CareerTask, featured: boolean) => ReactNode
+  layout?: (history: ReactNode, items: CareerTask[]) => ReactNode
+  emptyText?: string
+  refresh?: number
 }) {
   const [page, setPage] = useState(1)
   const load = useCallback((signal: AbortSignal) => careerWorkflow.tasks(kind, page, signal, jobId), [kind, page, jobId])
   const { data, error, retry, setData } = useCareerQuery(load)
   const active = data?.items.some((task) => task.status === 'QUEUED' || task.status === 'RUNNING')
   const action = useCareerAction()
+  useEffect(() => {
+    if (refresh) {
+      setPage(1)
+      retry()
+    }
+  }, [refresh, retry])
 
   useEffect(() => {
     if (!active || error) return
@@ -48,12 +58,14 @@ export default function TaskHistory({ kind, jobId, render }: {
     setPage(next)
   }
 
-  if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试读取</Button>} />
-  if (!data) return <Spin />
-  if (!data.items.length) return <Empty description="暂无任务" />
-  return (
+  const featured = data?.items.find((task) => task.status === 'SUCCEEDED' && task.result)
+  const history = error ? <Alert type="error" message={error} action={<Button onClick={retry}>重试读取</Button>} />
+    : !data ? <Spin />
+    : !data.items.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={emptyText} />
+    : (
     <Space direction="vertical" style={{ display: 'flex' }}>
-      {data.items.map((task) => (
+      {data.items.map((task) => renderTask && task.status === 'SUCCEEDED' && task.result
+        ? <div key={task.id}>{renderTask(task, task.id === featured?.id)}</div> : (
         <Card key={task.id} size="small" title={task.job} extra={<Tag color={status[task.status].color}>{status[task.status].label}</Tag>}>
           <Paragraph type="secondary">
             创建于 {new Date(task.createdAt).toLocaleString()} · 执行次数 {task.generation}
@@ -70,11 +82,12 @@ export default function TaskHistory({ kind, jobId, render }: {
           <TaskDetails task={task} />
         </Card>
       ))}
-      <Space>
+      {(page > 1 || data.hasMore) && <Space>
         <Button disabled={page === 1} onClick={() => changePage(page - 1)}>上一页</Button>
         <Text>第 {page} 页</Text>
         <Button disabled={!data.hasMore} onClick={() => changePage(page + 1)}>下一页</Button>
-      </Space>
+      </Space>}
     </Space>
   )
+  return layout ? layout(history, data?.items ?? []) : history
 }

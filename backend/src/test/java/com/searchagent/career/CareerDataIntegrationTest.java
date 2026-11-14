@@ -187,8 +187,8 @@ class CareerDataIntegrationTest {
                 """.formatted(job, UUID.randomUUID(), preparation);
         mvc.perform(post(root + "/interview").header("Authorization", access(owner)).contentType("application/json")
                         .content(answer.replace(job, otherJob))).andExpect(status().isNotFound());
-        mvc.perform(post(root + "/interview").header("Authorization", access(owner)).contentType("application/json")
-                        .content(answer)).andExpect(status().isOk())
+        String interview = savedId(root + "/interview", answer);
+        mvc.perform(get(root + "/" + interview).header("Authorization", access(owner)))
                 .andExpect(jsonPath("$.data.interview.prompt").value("如何评估修复结果？"));
         String training = """
                 {"jobId":"%s","requestId":"%s","preparationId":"%s","preferredQuestion":"%s-0"}
@@ -200,6 +200,29 @@ class CareerDataIntegrationTest {
         String trainingId = savedId(root + "/training", training);
         mvc.perform(get(root + "/" + trainingId).header("Authorization", access(owner)))
                 .andExpect(jsonPath("$.data.request.preferredQuestion").value(preparation + "-0"));
+        String progress = root + "/" + trainingId + "/training-progress";
+        mvc.perform(get(progress).header("Authorization", access(owner))).andExpect(status().isConflict());
+        jdbc.update("UPDATE career_task SET status = 'SUCCEEDED', result_json = ? WHERE id = ?", """
+                {"questions":[{"id":"%s-0","version":1,"kind":"OPEN"},{"id":"%s","version":1}]}
+                """.formatted(preparation, HASHCODE), trainingId);
+        mvc.perform(get(progress).header("Authorization", access(owner)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data").isEmpty());
+        jdbc.update("UPDATE career_task SET status = 'SUCCEEDED' WHERE id = ?", interview);
+        mvc.perform(post(ATTEMPTS).header("Authorization", access(owner)).contentType("application/json")
+                        .content("""
+                                {"requestId":"%s","questionId":"%s","questionVersion":1,"answer":"A","jobId":"%s"}
+                                """.formatted(UUID.randomUUID(), HASHCODE, otherJob))).andExpect(status().isOk());
+        mvc.perform(get(progress).header("Authorization", access(owner)))
+                .andExpect(jsonPath("$.data.length()").value(1)).andExpect(jsonPath("$.data[0].id").value(preparation + "-0"));
+        for (int i = 0; i < 2; i++) {
+            mvc.perform(post(ATTEMPTS).header("Authorization", access(owner)).contentType("application/json")
+                            .content("""
+                                    {"requestId":"%s","questionId":"%s","questionVersion":1,"answer":"A","jobId":"%s"}
+                                    """.formatted(UUID.randomUUID(), HASHCODE, job))).andExpect(status().isOk());
+        }
+        mvc.perform(get(progress).header("Authorization", access(owner)))
+                .andExpect(jsonPath("$.data.length()").value(2)).andExpect(jsonPath("$.data[0].id").value(HASHCODE));
+        mvc.perform(get(progress).header("Authorization", access(other))).andExpect(status().isNotFound());
     }
 
     @Test

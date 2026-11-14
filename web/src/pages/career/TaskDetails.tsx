@@ -1,9 +1,11 @@
 import { useCallback, useState } from 'react'
 import { Alert, Button, List, Modal, Space, Typography } from 'antd'
+import { FileTextOutlined } from '@ant-design/icons'
 import { documentApi, type DocumentPreview } from '@/api/documents'
 import { careerWorkflow, type CareerTask } from '@/api/careerWorkflow'
 import { useCareerAction } from './useCareerAction'
 import { useCareerQuery } from './useCareerQuery'
+import styles from './workspace.module.css'
 
 const stepLabels: Record<string, string> = {
   assemble_context: '装配备考上下文',
@@ -30,23 +32,33 @@ function Events({ id }: { id: string }) {
     )} />
 }
 
-export default function TaskDetails({ task }: { task: CareerTask }) {
+export default function TaskDetails({ task, referenceList = false }: { task: CareerTask; referenceList?: boolean }) {
   const [preview, setPreview] = useState<DocumentPreview>()
   const [trace, setTrace] = useState(false)
   const action = useCareerAction()
+  const openReference = (id: string) => action.run(async () => {
+    setPreview((await documentApi.preview(id)).data)
+  })
   return (
     <Space direction="vertical" style={{ display: 'flex' }}>
-      {!!task.references?.length && (
+      {!!task.references?.length && (referenceList ? (
+        <ul className={styles.items}>
+          {task.references.map((ref) => <li key={ref.id}>
+            <span className={styles.itemIcon}><FileTextOutlined /></span>
+            <div className={styles.itemBody}><strong>{ref.title}</strong><p className={styles.muted}>我的资料</p></div>
+            <Button size="small" type="link" loading={action.saving} onClick={() => openReference(ref.id)}>查看引用</Button>
+          </li>)}
+        </ul>
+      ) : (
         <Space wrap>
           <Typography.Text type="secondary">本次备考资料</Typography.Text>
           {task.references.map((ref, i) => (
-            <Button key={ref.id} type="link" size="small" loading={action.saving} onClick={() => action.run(async () => {
-              setPreview((await documentApi.preview(ref.id)).data)
-            })}>[资料{i + 1}] {ref.title}</Button>
+            <Button key={ref.id} type="link" size="small" loading={action.saving}
+              onClick={() => openReference(ref.id)}>[资料{i + 1}] {ref.title}</Button>
           ))}
         </Space>
-      )}
-      {task.generation > 0 && <Button type="link" size="small" onClick={() => setTrace(true)}>执行记录</Button>}
+      ))}
+      {!referenceList && task.generation > 0 && <Button type="link" size="small" onClick={() => setTrace(true)}>执行记录</Button>}
       <Modal open={!!preview} title={preview?.file_name} footer={null} onCancel={() => setPreview(undefined)} width={760}>
         <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', maxHeight: '65vh', overflow: 'auto' }}>
           {preview?.content}

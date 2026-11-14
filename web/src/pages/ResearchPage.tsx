@@ -49,6 +49,7 @@ import {
 import QualityCard from '@/components/research/QualityCard'
 import CompanyResearchForm from './career/CompanyResearchForm'
 import { preparationPath } from './career/paths'
+import workspace from './career/workspace.module.css'
 
 const { TextArea } = Input
 
@@ -88,7 +89,7 @@ const STEP_ICON: Record<string, string> = {
   write: '✍️',
 }
 
-export default function ResearchPage({ jobId }: { jobId?: string }) {
+export default function ResearchPage({ jobId, onHistoryChange }: { jobId?: string; onHistoryChange?: () => void }) {
   const { message } = App.useApp()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -151,12 +152,12 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
   }, [loadReports])
   useEffect(() => () => abortRef.current?.abort(), [])
 
-  // 深链：?report=<id> 自动打开某份报告（来自任务运行历史/首页简报跳转）
+  // 进入某次报告的链接，以及岗位页侧栏中的最近报告。
+  const reportParam = params.get('report')
   useEffect(() => {
-    const id = params.get('report')
-    if (id) openReport(id)
+    if (reportParam && reportParam !== currentIdRef.current) void openReport(reportParam)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [reportParam])
 
   const stepsRef = useRef<HTMLDivElement>(null)
 
@@ -206,6 +207,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
       setCurrentId(d.report_id)
       currentIdRef.current = d.report_id
       rememberReport(d.report_id)
+      onHistoryChange?.()
       if (historyPage === 1) setReports((prev) => [
         { id: d.report_id, topic: d.topic, title: null, status: 'planning', created_at: null },
         ...prev,
@@ -247,6 +249,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
       setRunning(false)
       setFeedOpen(false)
       loadReports()
+      onHistoryChange?.()
       // 拉一次 LoopDetail 显示评分卡(loop_enabled 关或 engine 异常时返回 null)
       // 延迟 500ms 给后端 LoopStore.finish_run() 落库 commit 留时间,
       // 避免拉到 status=running 的临时态(loop_finished 事件先到 + store 异步 commit 后到的时序竞态)
@@ -268,6 +271,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
       if (jobId) setResearchError(msg)
       else message.error(msg)
       void loadReports()
+      onHistoryChange?.()
       setRunning(false)
     },
     // V0.0.5 ② Verifier Loop 实时进度
@@ -376,7 +380,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
       }
       currentIdRef.current = id
       setCurrentId(id)
-      rememberReport(id)
+      if (reportParam !== id) rememberReport(id)
       setSubmittedTopic(d.topic)
       setSubmittedAt(d.created_at)
       setSavedDocument(d.saved_document_id ?? undefined)
@@ -430,6 +434,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
     e.stopPropagation()
     try {
       await researchApi.remove(id)
+      onHistoryChange?.()
       if (reports.length === 1 && historyPage > 1) setHistoryPage(historyPage - 1)
       else void loadReports()
       if (currentId === id) {
@@ -634,19 +639,21 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
   )
 
   return (
-    <div className={jobId ? 'research-page' : 'fluid-page research-page'} style={{ display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+    <div className={jobId ? workspace.stack : 'fluid-page research-page'} style={jobId ? undefined : {
+      display: 'flex', gap: 20, alignItems: 'flex-start', flexWrap: 'wrap',
+    }}>
       {/* 左：历史报告（桌面端常驻；手机端收进抽屉） */}
-      <div className="research-history" style={{ flex: '0 0 260px', minWidth: 220, maxWidth: '100%' }}>
+      {!jobId && <div className="research-history" style={{ flex: '0 0 260px', minWidth: 220, maxWidth: '100%' }}>
         {historyList}
-      </div>
+      </div>}
 
       {/* 手机端历史抽屉 */}
       <Drawer
         title="研究报告"
-        placement="left"
+        placement={jobId ? 'right' : 'left'}
         open={historyDrawerOpen}
         onClose={() => setHistoryDrawerOpen(false)}
-        width="80%"
+        width={jobId ? 'min(420px, 90vw)' : '80%'}
       >
         {historyList}
       </Drawer>
@@ -654,12 +661,12 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
       {/* 右：研究主区 */}
       <div style={{ flex: 1, minWidth: 0, width: '100%' }}>
         {/* 手机端顶部工具条：新建 / 历史 */}
-        <div className="research-mobile-bar">
+        <div className={jobId ? workspace.row : 'research-mobile-bar'} style={jobId ? { marginBottom: 12 } : undefined}>
           <Button icon={<PlusOutlined />} onClick={() => newResearch()}>
-            新建
+            {jobId ? '新建调研' : '新建'}
           </Button>
           <Button icon={<UnorderedListOutlined />} onClick={() => setHistoryDrawerOpen(true)}>
-            历史报告{reports.length ? `（${reports.length}）` : ''}
+            历史报告{historyTotal ? `（${historyTotal}）` : ''}
           </Button>
         </div>
 
@@ -816,7 +823,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
               </div>
             )}
 
-            {plan && plan.queries?.length > 0 && (
+            {plan && plan.queries?.length > 0 && (!jobId || running) && (
               <Card size="small" title="检索角度" style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                   {plan.queries.map((q, i) => (
@@ -828,7 +835,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
               </Card>
             )}
 
-            {sources.length > 0 && (
+            {!jobId && sources.length > 0 && (
               <Card size="small" title={`参考来源（${sources.length}）`} style={{ marginBottom: 12 }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {sources.map((s) => (
@@ -851,7 +858,14 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
             {/* 报告正文 */}
             {showReport && (
               <Card
+                className={jobId ? workspace.panel : undefined}
                 title={reportTitle || '研究报告'}
+                actions={jobId && canManage ? [
+                  savedDocument
+                    ? <Link key="plan" to={preparationPath('plan', { document: savedDocument, job: jobId })}>用报告制定备考计划</Link>
+                    : <Button key="save" type="link" loading={saving} onClick={saveToKb}>存入我的资料</Button>,
+                  <Link key="trace" to={`/career/tasks?task_id=${currentId}`}>执行轨迹</Link>,
+                ] : undefined}
                 extra={
                   canManage && (
                     <Space size="small" wrap>
@@ -890,7 +904,7 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
                       >
                         分享
                       </Button>
-                      {currentId && !running && (
+                      {!jobId && currentId && !running && (
                         <Button
                           icon={<HistoryOutlined />}
                           onClick={() => navigate(`${jobId ? '/career/tasks' : '/traces'}?task_id=${currentId}`)}
@@ -898,15 +912,13 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
                           执行轨迹
                         </Button>
                       )}
-                      {jobId && savedDocument ? (
-                        <Link to={preparationPath('plan', { document: savedDocument, job: jobId })}>用报告制定备考计划</Link>
-                      ) : <Button
+                      {!jobId && <Button
                         type="primary"
                         icon={<SaveOutlined />}
                         loading={saving}
                         onClick={saveToKb}
                       >
-                        {jobId ? '存入我的资料' : '存入知识库'}
+                        存入知识库
                       </Button>}
                     </Space>
                   )
@@ -934,6 +946,21 @@ export default function ResearchPage({ jobId }: { jobId?: string }) {
               />
             )}
           </div>
+        )}
+        {jobId && sources.length > 0 && (
+          <Card className={workspace.panel} title={`来源证据（${sources.length}）`} style={{ marginTop: 12 }}>
+            <ul className={workspace.items}>
+              {sources.map((source) => <li key={source.index}>
+                <span className={workspace.itemIcon}>{source.index}</span>
+                <div className={workspace.itemBody}>
+                  <strong>{source.title || source.url}</strong>
+                  <p className={workspace.muted}>{SOURCE_META[source.type]?.label || source.type}</p>
+                </div>
+                {source.url && <a className={workspace.itemAction} href={source.url} aria-label={`打开来源 ${source.title || source.index}`}
+                  target="_blank" rel="noreferrer">查看原文</a>}
+              </li>)}
+            </ul>
+          </Card>
         )}
       </div>
 

@@ -161,9 +161,9 @@ export interface ResearchStreamHandlers {
 }
 
 export const researchApi = {
-  list(page = 1, pageSize = 20, jobId?: string) {
+  list(page = 1, pageSize = 20, jobId?: string, signal?: AbortSignal) {
     return client.get<unknown, Wrapped<{ items: ReportBrief[]; total: number }>>(
-      '/research', { params: { page, page_size: pageSize, job_id: jobId } },
+      '/research', { params: { page, page_size: pageSize, job_id: jobId }, signal },
     )
   },
   detail(id: string) {

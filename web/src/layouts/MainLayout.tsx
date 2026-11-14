@@ -521,7 +521,8 @@ function MainLayoutContent() {
               padding: isMobile ? 14 : 24,
             }}
           >
-            {careerPage && !jobWorkspace && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
+            {careerPage && !jobWorkspace && !['/career/jobs', '/career/preparation'].includes(location.pathname)
+              && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
             <Outlet key={careerPage && !jobWorkspace ? job?.id : undefined} />
           </Content>
         </Layout>

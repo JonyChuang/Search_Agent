@@ -130,6 +130,27 @@ class CareerTasks {
         });
     }
 
+    List<PracticeService.QuestionVersion> trainingProgress(String user, UUID id) {
+        var plan = owned(user, id);
+        if (!"TRAINING".equals(plan.kind()) || !"SUCCEEDED".equals(plan.status())) {
+            throw new ResponseStatusException(CONFLICT, "训练计划尚未生成");
+        }
+        var objective = new ArrayList<PracticeService.QuestionVersion>();
+        var open = new ArrayList<String>();
+        for (var question : plan.result().path("questions")) {
+            String questionId = question.path("id").asText();
+            if ("OPEN".equals(question.path("kind").asText())) {
+                open.add(questionId);
+            } else {
+                objective.add(new PracticeService.QuestionVersion(questionId, question.path("version").asInt()));
+            }
+        }
+        var completed = new ArrayList<>(practice.completedQuestions(user, objective, plan.jobId(), plan.context().has("role")));
+        store.completedInterviews(user, plan.jobId(), open).forEach(
+                question -> completed.add(new PracticeService.QuestionVersion(question, 1)));
+        return completed;
+    }
+
     Task interview(String user, Interview input) {
         return enqueue(user, input.requestId(), "INTERVIEW", input, () -> {
             var job = jobs.find(user, input.jobId().toString());

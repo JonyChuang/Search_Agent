@@ -1,17 +1,20 @@
 import { useCallback, useState } from 'react'
-import { Alert, Button, Card, Form, Select, Space, Typography } from 'antd'
+import { Alert, Button, Collapse, Form, Select, Space, Typography } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { useCurrentJob } from './career/CurrentJob'
-import { practiceLink, roles } from './career/QuestionCatalog'
+import { roles } from './career/QuestionCatalog'
 import PreparationDocuments from './career/PreparationDocuments'
 import TaskHistory from './career/TaskHistory'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
 import { jobPath, preparationPath } from './career/paths'
 import type { JobInput } from '@/api/career'
+import TrainingPlanCard from './career/TrainingPlanCard'
+import PreparationSidebar, { LatestReview } from './career/PreparationSidebar'
+import styles from './career/workspace.module.css'
 
-const { Paragraph, Title } = Typography
+const { Paragraph } = Typography
 
 export default function TrainingPlanPage({ job }: { job?: JobInput & { id: string } }) {
   const { jobs, loading } = useCurrentJob()
@@ -35,17 +38,17 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
     ? [linkedDocument] : [])
   const [skillId, setSkillId] = useState<string>()
   const training = useCareerAction()
+  const [createOpen, setCreateOpen] = useState(!!(linkedDocument || source))
 
-  return (
-    <Space direction="vertical" size="large" style={{ display: 'flex', maxWidth: 1000, marginInline: 'auto' }}>
-      <TrainingHistory key={trainingRefresh} jobId={job?.id} />
-      <Card title="创建训练计划">
+  const createPanel = <Collapse activeKey={createOpen ? ['create'] : []} onChange={(keys) => setCreateOpen(keys.includes('create'))}
+    items={[{ key: 'create', label: '创建训练计划', children: <>
         {preparation.error && <Alert type="error" message={preparation.error} action={<Button onClick={preparation.retry}>重试</Button>} />}
         {source && preparation.data && !latest && <Alert type="warning" message="此岗位无法使用所选模拟题批次。"
           action={<Link to={preparationPath('plan', job ? { job: job.id } : undefined)}>继续使用最近题目</Link>} />}
         <Form layout="vertical" onFinish={(values: { jobId: string; role?: string }) => training.run(async () => {
           const input = job ? { jobId: job.id, preparationId: latest?.id, preferredQuestion } : values
           await training.submit('training', { ...input, documentIds, skillId }, careerWorkflow.training)
+          setCreateOpen(false)
           refreshTraining((n) => n + 1)
         })}>
           {preferred && <Alert type="info" message="本次计划将包含所选题目" description={preferred.prompt} style={{ marginBottom: 12 }} />}
@@ -76,33 +79,24 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
             {job && <Link to={jobPath(job.id, 'memory')}>备考偏好</Link>}
           </Space>
         </Form>
-      </Card>
-    </Space>
-  )
-}
+    </> }]} />
 
-function TrainingHistory({ jobId }: { jobId?: string }) {
-  const review = useCareerAction()
-  const [, setParams] = useSearchParams()
-  return <>
-      <Title level={4} style={{ margin: 0 }}>训练计划</Title>
-      <TaskHistory kind="TRAINING" jobId={jobId} render={(task) => task.result && (
-        <>
-          <Paragraph style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{task.result.analysis}</Paragraph>
-          <ol>{task.result.steps?.map((step, index) => <li key={index}>{step}</li>)}</ol>
-          <ul>{task.result.questions?.map((question) => (
-            <li key={question.id}><Link to={question.kind === 'OPEN'
-              ? preparationPath('interview', {
-                question: question.id,
-                ...(task.request.jobId ? { job: task.request.jobId } : {}),
-              })
-              : practiceLink(question.id, question.version, task.request.jobId)}>{question.prompt}</Link> · 版本 {question.version}</li>
-          ))}</ul>
-          <Button loading={review.saving} onClick={() => review.run(async () => {
-            await review.submit('review', { planId: task.id }, careerWorkflow.review)
-            setParams({ tab: 'review', ...(task.request.jobId ? { job: task.request.jobId } : {}) })
-          })}>根据练习生成复习建议</Button>
-        </>
-      )} />
-  </>
+  return (
+    <TaskHistory refresh={trainingRefresh} kind="TRAINING" jobId={job?.id}
+      emptyText="还没有训练计划。可创建计划，或先从面经与题库选题。"
+      renderTask={(task, featured) => featured ? <TrainingPlanCard task={task} /> : <Collapse size="small" ghost items={[{
+        key: task.id,
+        label: `历史计划 · ${new Date(task.createdAt).toLocaleString('zh-CN')}`,
+        children: <TrainingPlanCard task={task} />,
+      }]} />}
+      layout={(history, tasks) => <div className={styles.grid}>
+        <div className={styles.stack}>
+          {(linkedDocument || source) && createPanel}
+          {history}
+          <LatestReview jobId={job?.id} />
+          {!(linkedDocument || source) && createPanel}
+        </div>
+        <PreparationSidebar jobId={job?.id} plan={tasks.find((task) => task.status === 'SUCCEEDED')} />
+      </div>} />
+  )
 }

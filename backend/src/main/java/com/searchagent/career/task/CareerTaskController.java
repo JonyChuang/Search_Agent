@@ -16,6 +16,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.searchagent.career.web.CareerResponse;
 import com.searchagent.career.web.CareerUser;
+import com.searchagent.career.practice.PracticeService;
 
 @RestController
 @RequestMapping("/api/career/tasks")
@@ -66,6 +67,11 @@ class CareerTaskController {
     @GetMapping("/{id}/events")
     CareerResponse<List<CareerTaskStore.Event>> events(@CareerUser String user, @PathVariable UUID id) {
         return CareerResponse.ok(tasks.events(user, id));
+    }
+
+    @GetMapping("/{id}/training-progress")
+    CareerResponse<List<PracticeService.QuestionVersion>> trainingProgress(@CareerUser String user, @PathVariable UUID id) {
+        return CareerResponse.ok(tasks.trainingProgress(user, id));
     }
 
     @PostMapping("/{id}/retry")

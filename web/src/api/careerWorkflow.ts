@@ -107,6 +107,8 @@ export const careerWorkflow = {
     get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page, jobId }),
   task: (id: string, signal: AbortSignal) => get<CareerTask>(`/career/tasks/${encodeURIComponent(id)}`, signal),
   taskEvents: (id: string, signal: AbortSignal) => get<TaskEvent[]>(`/career/tasks/${id}/events`, signal),
+  trainingProgress: (id: string, signal: AbortSignal) =>
+    get<Pick<Question, 'id' | 'version'>[]>(`/career/tasks/${id}/training-progress`, signal),
   memory: (jobId: string, signal: AbortSignal) => get<JobMemory>(`/career/jobs/${jobId}/memory`, signal),
   saveMemory: async (jobId: string, input: JobMemory) =>
     (await client.put<unknown, Response<JobMemory>>(`/career/jobs/${jobId}/memory`, input)).data,

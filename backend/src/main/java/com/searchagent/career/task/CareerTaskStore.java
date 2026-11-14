@@ -76,6 +76,17 @@ class CareerTaskStore {
                 .query(this::row).list();
     }
 
+    List<String> completedInterviews(String user, String jobId, List<String> questionIds) {
+        if (questionIds.isEmpty()) return List.of();
+        return db.sql("""
+                SELECT DISTINCT request_json->>'$.questionId' AS question_id
+                FROM career_task WHERE user_id = :user AND job_id = :jobId
+                    AND kind = 'INTERVIEW' AND status = 'SUCCEEDED'
+                    AND request_json->>'$.questionId' IN (:questionIds)
+                """).param("user", user).param("jobId", jobId).param("questionIds", questionIds)
+                .query(String.class).list();
+    }
+
     @Transactional
     Optional<Row> claim() {
         // Serialize the short claim transaction across Java instances. No model call holds this lock.

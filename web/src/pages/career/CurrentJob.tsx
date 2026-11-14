@@ -44,7 +44,7 @@ export function useCurrentJob() {
   return context
 }
 
-export function CurrentJobSelect({ maxWidth }: { maxWidth?: number }) {
+export function CurrentJobSelect({ maxWidth, inHero = false }: { maxWidth?: number; inHero?: boolean }) {
   const { job, jobs, error, loading, saving, select, reload } = useCurrentJob()
   const [params, setParams] = useSearchParams()
 
@@ -62,13 +62,13 @@ export function CurrentJobSelect({ maxWidth }: { maxWidth?: number }) {
   }
 
   return (
-    <Space wrap style={{ display: 'flex', marginBottom: 16, maxWidth, marginInline: 'auto' }}>
+    <Space wrap style={{ display: 'flex', marginBottom: inHero ? 0 : 16, maxWidth, marginInline: 'auto' }}>
       <Select aria-label="当前目标岗位" placeholder="选择当前目标岗位" allowClear showSearch
         optionFilterProp="label" value={job?.id} loading={loading || saving} disabled={saving || loading || !!error}
-        style={{ width: 250, maxWidth: '75vw' }}
+        style={{ width: inHero ? 220 : 250, maxWidth: '72vw' }} size={inHero ? 'small' : 'middle'}
         options={jobs?.map((item) => ({ value: item.id, label: `${item.company} · ${item.title}` }))}
         onChange={changeJob} />
-      <Link to="/career/jobs">{jobs?.length ? '管理岗位' : '新增岗位'}</Link>
+      {!inHero && <Link to="/career/jobs">{jobs?.length ? '管理岗位' : '新增岗位'}</Link>}
       {error && <Alert type="error" message={error} action={<Button size="small" onClick={reload}>重试</Button>} />}
     </Space>
   )

@@ -69,6 +69,11 @@ public class PracticeService {
         return mapper.feedback(userId, questions, jobId, includeUnscoped);
     }
 
+    public List<QuestionVersion> completedQuestions(String userId, List<QuestionVersion> questions, String jobId,
+            boolean includeUnscoped) {
+        return questions.isEmpty() ? List.of() : mapper.completedQuestions(userId, questions, jobId, includeUnscoped);
+    }
+
     public InterviewQuestion interviewQuestion(String id, int version) {
         var question = mapper.interviewQuestion(id, version);
         if (question == null) {

@@ -87,6 +87,22 @@ interface PracticeMapper {
             @Param("refs") List<PracticeService.QuestionVersion> refs, @Param("jobId") String jobId,
             @Param("includeUnscoped") boolean includeUnscoped);
 
+    @Select("""
+            <script>
+            SELECT DISTINCT question_id AS id, question_version AS version
+            FROM career_practice_attempt
+            WHERE user_id = #{userId}
+                AND (job_id = #{jobId} OR (#{includeUnscoped} = TRUE AND job_id IS NULL))
+                AND (question_id, question_version) IN
+                <foreach item="ref" collection="refs" open="(" separator="," close=")">
+                    (#{ref.id}, #{ref.version})
+                </foreach>
+            </script>
+            """)
+    List<PracticeService.QuestionVersion> completedQuestions(@Param("userId") String userId,
+            @Param("refs") List<PracticeService.QuestionVersion> refs, @Param("jobId") String jobId,
+            @Param("includeUnscoped") boolean includeUnscoped);
+
     @Select(ATTEMPT_SELECT + " AND (#{jobId} IS NULL OR a.job_id = #{jobId}) ORDER BY a.sequence_id DESC LIMIT #{limit} OFFSET #{offset}")
     List<PracticeService.Attempt> attempts(
             @Param("userId") String userId, @Param("jobId") String jobId,
