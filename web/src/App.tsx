@@ -3,7 +3,6 @@ import MainLayout from './layouts/MainLayout'
 import HomePage from './pages/HomePage'
 import CareerHomePage from './pages/CareerHomePage'
 import ResumeWorkbenchPage from './pages/ResumeWorkbenchPage'
-import JobCompanyPage from './pages/JobCompanyPage'
 import JobWorkspacePage from './pages/JobWorkspacePage'
 import PreparationPage, { LegacyPreparationLink } from './pages/PreparationPage'
 import { CareerMemoryPage, CareerTasksPage } from './pages/CareerWorkspacePages'
@@ -55,8 +54,7 @@ export default function App() {
             <Route index element={<CareerHomePage />} />
             <Route path="workspace" element={<HomePage />} />
             <Route path="career/resume" element={<ResumeWorkbenchPage />} />
-            <Route path="career/jobs" element={<JobCompanyPage />} />
-            <Route path="career/jobs/:jobId" element={<JobWorkspacePage />} />
+            <Route path="career/jobs/:jobId?" element={<JobWorkspacePage />} />
             <Route path="career/preparation" element={<PreparationPage />} />
             <Route path="career/questions" element={<LegacyPreparationLink page="questions" />} />
             <Route path="career/practice" element={<LegacyPreparationLink page="practice" />} />

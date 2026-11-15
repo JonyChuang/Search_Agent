@@ -6,6 +6,7 @@ import { useCareerQuery } from './useCareerQuery'
 
 interface Props<T> {
   label: string
+  className?: string
   api: CareerRecords<T>
   defaults: () => Partial<T>
   normalize: (values: T) => T
@@ -15,7 +16,7 @@ interface Props<T> {
 }
 
 export default function CareerRecordList<T extends object>({
-  label, api, defaults, normalize, children, render, onChange,
+  label, className, api, defaults, normalize, children, render, onChange,
 }: Props<T>) {
   const { data, setData, error, retry } = useCareerQuery(api.list)
   const [editor, setEditor] = useState<{ id?: string; values: Partial<T> }>()
@@ -62,6 +63,7 @@ export default function CareerRecordList<T extends object>({
 
   return (
     <Card
+      className={className}
       title={label}
       extra={<Button type="primary" disabled={!data || deleting} onClick={() => openEditor()}>新增{label}</Button>}
     >

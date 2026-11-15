@@ -115,8 +115,30 @@
 .itemAction { flex: 0 0 auto; align-self: center; }
 .longText { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .excerpt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.record { padding-block: 8px; }
+.jobList { min-width: 0; border-color: var(--career-line); }
+.jobList :global(.ant-card-body) { padding: 0 18px; }
+.jobList :global(.ant-list-item) { padding-block: 14px; }
+.jobList :global(.ant-list-item-action) { margin-top: 4px; }
+.jobList :global(.ant-list-empty-text) { padding-block: 20px; }
+.jobList :global(.ant-alert),
+.jobList > :global(.ant-card-body) > :global(.ant-spin) { margin-block: 16px; }
+.record { display: grid; gap: 8px; }
 .record .sectionTitle { overflow-wrap: anywhere; }
+.jobIdentity { min-width: 0; display: flex; align-items: flex-start; gap: 9px; }
+.jobIdentity .itemIcon { margin-top: 2px; }
+.jobTargetTag { margin-inline-end: 0; }
+.record .jobDescription { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.jobResearchLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 6px;
+  padding: 3px 8px;
+  background: var(--career-tint);
+  color: var(--career-accent);
+  font-weight: 500;
+}
+.jobResearchLink:hover { background: #e6defd; color: #4335b3; }
 .researchIntro { display: flex; align-items: flex-start; gap: 12px; }
 .researchIntro .itemIcon { flex-basis: 36px; height: 36px; }
 .researchIntro p { margin-top: 4px; }
@@ -136,4 +158,5 @@
   .hero { padding: 16px; gap: 12px; }
   .heroPanel { width: 100%; }
   .panel :global(.ant-card-body) { padding-inline: 13px; }
+  .jobList :global(.ant-card-body) { padding-inline: 13px; }
 }
