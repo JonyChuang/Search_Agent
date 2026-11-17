@@ -4,7 +4,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.time.Instant;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -30,12 +32,48 @@ class CareerTaskSchedulingTest {
     @Autowired CareerTaskStore store;
     @Autowired JdbcTemplate db;
     @Autowired ObjectMapper json;
+    @Autowired CareerInterviewStore interviewStore;
+    @Autowired CareerInterviewSessions interviews;
     private final String user = UUID.randomUUID().toString();
     private final String other = UUID.randomUUID().toString();
 
     @AfterEach
     void clean() {
+        db.update("DELETE FROM career_mock_interview WHERE user_id IN (?, ?)", user, other);
         db.update("DELETE FROM career_task WHERE user_id IN (?, ?)", user, other);
+    }
+
+    @Test
+    void finalInterviewAnswerCompletesWithoutBrowserAndRecoversPreviouslyStoredResults() {
+        for (boolean recovered : List.of(false, true)) {
+            var id = UUID.randomUUID();
+            var now = Instant.now();
+            var question = new InterviewQuestions.Question("sample", 1, 1, InterviewQuestions.Phase.CORE,
+                    "话题", "请说明验证方法", List.of("给出依据"), "测试题", null);
+            interviewStore.insert(user, new CareerInterviewSessions.Session(id, UUID.randomUUID().toString(),
+                    Map.of("company", "示例公司", "title", "示例岗位"),
+                    CareerInterviewSessions.Mode.TEXT, CareerInterviewSessions.Status.ACTIVE, now, now,
+                    0, 0, 0, List.of(new CareerInterviewSessions.Round(question, null, null, null)), null));
+            var view = interviews.answer(user, id, new CareerInterviewSessions.Answer(UUID.randomUUID(), 0, "测试回答"));
+            var task = store.claim().orElseThrow();
+            assertEquals(view.pending().id().toString(), task.id());
+            var result = json.createObjectNode().put("accuracy", 4).put("evidence", 3).put("structure", 5)
+                    .put("feedback", "建议补充实验数据");
+            if (recovered) {
+                assertTrue(store.finish(task, result, null));
+                var pending = interviewStore.completedPending().getFirst();
+                interviews.recover(pending);
+                interviews.recover(pending);
+            } else {
+                interviews.finishTask(task, result, null);
+                interviews.finishTask(task, result, null);
+            }
+
+            var completed = interviews.get(user, id);
+            assertEquals(CareerInterviewSessions.Status.FINISHED, completed.summary().status());
+            assertEquals("建议补充实验数据", completed.review().getFirst().main().evaluation().feedback());
+            assertTrue(interviewStore.completedPending().isEmpty());
+        }
     }
 
     @Test

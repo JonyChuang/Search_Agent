@@ -1,7 +1,10 @@
 """对话相关请求/响应 schema。"""
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+CareerAction = Literal["CREATE_TRAINING_PLAN", "CREATE_INTERVIEW", "CREATE_APPLICATION", "CREATE_RESUME"]
 
 
 class ConversationCreateRequest(BaseModel):
@@ -24,6 +27,9 @@ class ChatStreamRequest(BaseModel):
 
     conversation_id: uuid.UUID | None = None
     message: str = Field(..., min_length=1)
+    career_job_id: uuid.UUID | None = None
+    career_plan_request_id: uuid.UUID | None = None
+    career_action: CareerAction | None = None
     # AI 主动开场白（今日回顾「聊聊」带入）：新会话首轮时先作为 assistant 消息落库，
     # 使其进入对话历史，模型能接住这个话题。仅 conversation_id 为空（新会话）时生效。
     greeting: str | None = Field(default=None, max_length=2000)

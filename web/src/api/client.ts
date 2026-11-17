@@ -33,6 +33,8 @@ client.interceptors.response.use(
     }
     if (isCareerRequest(resp.config.url) && resp.config.url !== '/career/health'
         && (body?.code !== 0 || body.data === undefined)) {
+      if (resp.config.responseType === 'blob' && body instanceof Blob
+          && resp.headers['content-disposition']?.startsWith('attachment')) return body
       throw new Error('求职服务返回了无法识别的内容，请检查前端代理是否连接到 Java 后端。')
     }
     return body
@@ -62,6 +64,11 @@ client.interceptors.response.use(
       }
     }
     if (isCareerRequest(error.config?.url)) {
+      const body = error.response?.data
+      if (body instanceof Blob && body.type.includes('json')) {
+        const payload = JSON.parse(await body.text()) as { message?: string }
+        if (payload.message) throw new Error(payload.message)
+      }
       if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
         throw new Error('求职服务响应超时，请重试。若仍超时，请检查 Java 后端是否已启动。')
       }

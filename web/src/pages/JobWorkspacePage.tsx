@@ -73,7 +73,7 @@ export default function JobWorkspacePage() {
           extra={<Link to="/career/memory?tab=graph">查看全局记忆与关系图谱</Link>}>
           <JobPreparationMemory jobId={job.id} />
         </Card> : jobRequired },
-        { key: 'tasks', label: '任务记录', children: job
+        { key: 'tasks', label: '本岗位任务', children: job
           ? <CareerTaskRecords jobId={job.id} kind={params.get('kind') ?? ''} /> : jobRequired },
       ]} />
       {tab === 'tasks' && job && <Link to={jobPath(job.id)}>返回公司调研</Link>}

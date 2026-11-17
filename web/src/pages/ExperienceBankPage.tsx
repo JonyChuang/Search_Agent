@@ -3,8 +3,12 @@ import { Alert, Button, Card, Empty, List, Space, Spin, Tabs, Tag, Typography } 
 import { Link as RouteLink, useSearchParams } from 'react-router-dom'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { practiceApi, type InterviewNote } from '@/api/practice'
+import { contentReview } from '@/api/contentReview'
 import { useCurrentJob } from './career/CurrentJob'
-import QuestionCatalog, { PracticeQuestionList } from './career/QuestionCatalog'
+import { PracticeQuestionList } from './career/QuestionCatalog'
+import { LearningLibrary } from './career/LearningPractice'
+import JobLearningNotes, { SaveLearningNote } from './career/JobLearningNotes'
+import PublicLearningReview from './career/PublicLearningReview'
 import TaskHistory from './career/TaskHistory'
 import PreparationDocuments from './career/PreparationDocuments'
 import { useCareerAction } from './career/useCareerAction'
@@ -79,7 +83,7 @@ function JobPreparation({ jobId }: { jobId: string }) {
         await action.submit('preparation', { jobId, documentIds, skillId }, careerWorkflow.prepare)
         setRefresh((previous) => previous + 1)
       })}>生成岗位模拟题</Button>
-      <TaskHistory key={refresh} kind="PREPARATION" jobId={jobId} render={(task) => task.result && (
+      <TaskHistory key={refresh} kind="PREPARATION" content="questions" jobId={jobId} render={(task) => task.result && (
         <>
           <Space wrap>
             <Text strong>建议准备的能力</Text>
@@ -90,7 +94,7 @@ function JobPreparation({ jobId }: { jobId: string }) {
               <RouteLink key="plan" to={preparationPath('plan', {
                 job: jobId, source: task.id, question: `${task.id}-${index}`,
               })}>加入备考计划</RouteLink>,
-              <RouteLink key="interview" to={preparationPath('interview', { job: jobId, question: `${task.id}-${index}` })}>开始作答</RouteLink>,
+              <RouteLink key="interview" to={preparationPath('open', { job: jobId, question: `${task.id}-${index}` })}>开始作答</RouteLink>,
             ]}>
               <List.Item.Meta title={question.prompt} description={<Tag color="purple">AI 模拟 · {question.topic}</Tag>} />
             </List.Item>
@@ -119,8 +123,8 @@ function JobDiscovery({ jobId }: { jobId: string }) {
           {task.result.searchedAt && <Text type="secondary">检索于 {new Date(task.result.searchedAt).toLocaleString()}</Text>}
           <List dataSource={task.result.sources} rowKey={(source) => source.url}
             locale={{ emptyText: '本次未找到可展示的网页' }}
-            renderItem={(source) => (
-              <List.Item><List.Item.Meta title={
+            renderItem={(source, index) => (
+              <List.Item actions={[<SaveLearningNote key={source.url} jobId={jobId} task={task} index={index} />]}><List.Item.Meta title={
                 <Link href={source.url} target="_blank" rel="noopener noreferrer">{source.title}</Link>
               } description={source.snippet} /></List.Item>
             )} />
@@ -133,8 +137,10 @@ function JobDiscovery({ jobId }: { jobId: string }) {
 export default function ExperienceBankPage({ jobId }: { jobId?: string }) {
   const { loading } = useCurrentJob()
   const [params, setParams] = useSearchParams()
+  const access = useCareerQuery(contentReview.access)
   const source = params.get('source')
-  const active = source === 'notes' || (jobId && ['recommended', 'discovery', 'preparation'].includes(source ?? ''))
+  const active = source === 'notes' || source === 'my-notes' || (source === 'review-content' && access.data)
+    || (jobId && ['recommended', 'discovery', 'preparation'].includes(source ?? ''))
     ? source ?? 'questions' : 'questions'
   return (
       <Card>
@@ -143,13 +149,16 @@ export default function ExperienceBankPage({ jobId }: { jobId?: string }) {
           next.set('source', key)
           setParams(next, { replace: true })
         }} items={[
-          { key: 'questions', label: '公开题库', children: <QuestionCatalog jobId={jobId} /> },
+          { key: 'questions', label: '题库', children: <LearningLibrary jobId={jobId} /> },
           { key: 'notes', label: '公开面经', children: <InterviewNotes /> },
+          { key: 'my-notes', label: '我的面经', children: jobId ? <JobLearningNotes jobId={jobId} />
+            : <Alert type="info" message="请先在页面顶部选择要整理面经的岗位" /> },
           ...(jobId ? [
             { key: 'recommended', label: '岗位推荐', children: <JobRecommendations jobId={jobId} /> },
             { key: 'discovery', label: '联网面经', children: <JobDiscovery jobId={jobId} /> },
             { key: 'preparation', label: 'AI 模拟题', children: <JobPreparation jobId={jobId} /> },
           ] : []),
+          ...(access.data ? [{ key: 'review-content', label: '内容审核', children: <PublicLearningReview /> }] : []),
         ]} />}
       </Card>
   )

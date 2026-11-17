@@ -1,201 +1,208 @@
-import { useCallback, type ReactNode } from 'react'
+import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { Alert, Button } from 'antd'
 import {
-  ArrowDownOutlined, ArrowRightOutlined, AuditOutlined, BookOutlined, CheckOutlined,
-  CommentOutlined, CompassOutlined, FileDoneOutlined, FileSearchOutlined, FileTextOutlined,
-  FlagOutlined, FundOutlined, ReadOutlined, ReloadOutlined,
+  AimOutlined, ArrowRightOutlined, ArrowUpOutlined, CheckOutlined, CommentOutlined,
+  FileDoneOutlined, FileSearchOutlined, FileTextOutlined, FlagOutlined, FundOutlined,
+  PlusOutlined, ReadOutlined, RightOutlined,
 } from '@ant-design/icons'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { careerApi } from '@/api/career'
-import { applicationStages, careerWorkflow, type Stage } from '@/api/careerWorkflow'
+import { careerWorkflow } from '@/api/careerWorkflow'
 import { modelApi } from '@/api/models'
 import { practiceApi } from '@/api/practice'
-import { useAuthStore } from '@/stores/authStore'
 import { useCurrentJob } from './career/CurrentJob'
+import { withJobContext } from './career/jobContext'
+import { jobPath, newJobPath, preparationPath, resumeStudioPath } from './career/paths'
+import { trainingQuestionPath } from './career/TrainingPlanCard'
 import { useCareerQuery } from './career/useCareerQuery'
-import { jobPath, preparationPath } from './career/paths'
+import { useTrainingProgress } from './career/useTrainingProgress'
+import dashboard from './career/dashboard.module.css'
 import styles from './CareerHomePage.module.css'
 
-const stageColors: Record<Stage, string> = {
-  DRAFT: '#717b96', SUBMITTED: '#5554d8', SCREENING: '#2b74c8', INTERVIEW: '#986218',
-  OFFER: '#147d68', REJECTED: '#b85161', WITHDRAWN: '#645d78',
-}
-const stages = Object.keys(applicationStages) as Stage[]
-
-const features = [
-  { title: '求职助手', copy: '和 AI 讨论岗位、材料与准备方向', to: '/chat', icon: CommentOutlined, tone: 'violet' },
-  { title: '简历与经历', copy: '归档真实经历，生成岗位简历', to: '/career/resume', icon: FileTextOutlined, tone: 'blue' },
-  { title: '岗位与公司', copy: '保存招聘信息，发起公司调研', to: '/career/jobs', icon: FileSearchOutlined, tone: 'teal' },
-  { title: '我的资料', copy: '集中管理文档和网页资料', to: '/knowledge', icon: BookOutlined, tone: 'amber' },
-  { title: '备考中心', copy: '查面经、安排训练、练习并复盘', to: preparationPath(), icon: ReadOutlined, tone: 'blue' },
-  { title: '网申助手', copy: '关联简历版本，整理申请答案', to: '/career/apply', icon: FileDoneOutlined, tone: 'violet' },
-  { title: '投递看板', copy: '维护实际投递阶段，回看记录', to: '/career/applications', icon: FundOutlined, tone: 'blue' },
-] as const
+const suggestions = [
+  { label: '分析岗位要求', prompt: '请帮我分析这个岗位的核心要求和准备重点。', Icon: FileSearchOutlined },
+  { label: '准备面试问题', prompt: '请根据这个岗位列出值得准备的面试问题。', Icon: CommentOutlined },
+  { label: '梳理项目经历', prompt: '请引导我梳理适合这个岗位的项目经历。', Icon: FileTextOutlined },
+]
 
 async function loadChatModels(signal: AbortSignal) {
   return (await modelApi.list('chat', signal)).data
 }
 
-function HeroArtwork() {
-  return (
-    <div className={styles.artwork} aria-hidden="true">
-      <svg viewBox="0 0 440 248" fill="none">
-        <circle cx="251" cy="120" r="105" />
-        <circle cx="251" cy="120" r="77" />
-        <path d="M30 205C97 205 99 166 150 159S223 149 251 120 310 72 398 57" strokeDasharray="4 8" />
-        <path d="M151 159C197 155 224 147 251 120S310 72 350 68" className={styles.routeLine} />
-        <path d="M367 107h20m-10-10v20M77 65h14m-7-7v14M291 211h12m-6-6v12" />
-        <circle cx="32" cy="205" r="3" /><circle cx="398" cy="57" r="3" />
-      </svg>
-      <span className={`${styles.artNode} ${styles.artStart}`}><FileSearchOutlined /></span>
-      <span className={`${styles.artNode} ${styles.artCenter}`}><CompassOutlined /></span>
-      <span className={`${styles.artNode} ${styles.artFinish}`}><FlagOutlined /></span>
-      <span className={styles.artCaption}>目标岗位 · 定向训练 · 投递跟进</span>
-    </div>
-  )
+function Metric({ title, value, note, icon, tone, to }: {
+  title: string; value?: string | number; note: string; icon: ReactNode; tone: string; to: string
+}) {
+  return <Link className={styles.metric} to={to}>
+    <div className={styles.metricTitle}><span className={styles.metricIcon} data-tone={tone}>{icon}</span>
+      {title}<RightOutlined className={styles.metricArrow} aria-hidden /></div>
+    <p className={styles.metricValue}><strong>{value ?? '—'}</strong><span>{note}</span></p>
+  </Link>
 }
 
-function OverviewCard({ title, eyebrow, icon, children }: {
-  title: string; eyebrow: string; icon: ReactNode; children: ReactNode
-}) {
-  return (
-    <section className={styles.overviewCard} aria-label={title}>
-      <div className={styles.chartHeading}>
-        <span className={`${styles.iconBox} ${styles.blue}`}>{icon}</span>
-        <div><h3>{title}</h3><p>{eyebrow}</p></div>
+function CareerAssistant() {
+  const { job, loading } = useCurrentJob()
+  const navigate = useNavigate()
+  const [prompt, setPrompt] = useState('')
+  const input = useRef<HTMLTextAreaElement>(null)
+
+  return <section className={styles.panel} aria-labelledby="overview-assistant">
+    <header className={styles.panelHead}>
+      <h2 id="overview-assistant"><span className={styles.metricIcon}><CommentOutlined aria-hidden /></span>求职助手</h2>
+      <Link to="/chat" className={styles.panelLink}>打开对话 <RightOutlined aria-hidden /></Link>
+    </header>
+    <p className={styles.assistantCopy}>围绕岗位要求准备面试，或梳理真实经历。</p>
+    <form className={styles.composer} onSubmit={(event) => {
+      event.preventDefault()
+      const text = prompt.trim()
+      if (text && !loading) navigate('/chat', { state: { careerPrompt: job ? withJobContext(job, text) : text } })
+    }}>
+      <textarea ref={input} aria-label="向求职助手提问" value={prompt} rows={2}
+        placeholder={job ? '想为这个岗位准备什么？' : '想为求职准备什么？'}
+        onChange={(event) => setPrompt(event.target.value)} />
+      <div className={styles.composerActions}>
+        {job ? <span className={styles.context} title={job.company + ' · ' + job.title}>
+          <AimOutlined aria-hidden /> 当前岗位
+        </span> : <span />}
+        <button type="submit" className={dashboard.primary} disabled={!prompt.trim() || loading} aria-label="发送问题">
+          <ArrowUpOutlined aria-hidden />
+        </button>
       </div>
-      {children}
-    </section>
-  )
+    </form>
+    <div className={styles.suggestions}>
+      {suggestions.map(({ label, prompt: suggestion, Icon }) => (
+        <button key={label} type="button" onClick={() => { setPrompt(suggestion); input.current?.focus() }}>
+          <Icon aria-hidden /> {label}
+        </button>
+      ))}
+    </div>
+  </section>
 }
 
 export default function CareerHomePage() {
-  const nickname = useAuthStore((state) => state.user?.nickname)
-  const { job, jobs } = useCurrentJob()
+  const target = useCurrentJob()
+  const { job } = target
   const jobId = job?.id
+  const scope = jobId ? { job: jobId } : undefined
+  const planPath = preparationPath('plan', scope)
+  const reviewPath = preparationPath('review', { ...scope, section: 'history' })
+  const loadTraining = useCallback((signal: AbortSignal) => jobId
+    ? careerWorkflow.tasks('TRAINING', 1, signal, jobId) : Promise.resolve(undefined), [jobId])
+  const loadPractice = useCallback((signal: AbortSignal) => target.loading || target.error
+    ? Promise.resolve(undefined) : practiceApi.attempts(1, signal, jobId), [target.loading, target.error, jobId])
+  const training = useCareerQuery(loadTraining)
+  const practice = useCareerQuery(loadPractice)
   const experiences = useCareerQuery(careerApi.experiences.list)
-  const models = useCareerQuery(loadChatModels)
-  const loadRecentPractice = useCallback((signal: AbortSignal) => practiceApi.attempts(1, signal, jobId), [jobId])
-  const practice = useCareerQuery(loadRecentPractice)
-  const loadRecentInterviews = useCallback((signal: AbortSignal) =>
-    jobId ? careerWorkflow.tasks('INTERVIEW', 1, signal, jobId) : Promise.resolve(undefined), [jobId])
-  const interviews = useCareerQuery(loadRecentInterviews)
   const applications = useCareerQuery(careerWorkflow.applications)
-  const visibleApplications = applications.data?.filter((entry) => !jobId || entry.jobId === jobId)
-
-  const confirmed = experiences.data?.filter((entry) => entry.confirmed).length
+  const models = useCareerQuery(loadChatModels)
+  const tasks = training.data?.items
+  const plan = tasks?.find((task) => task.status === 'SUCCEEDED' && task.result)
+  const progress = useTrainingProgress(plan)
+  const { completed, hasProgress, questions, next } = progress
+  const planDone = hasProgress && questions.length > 0 && completed === questions.length
+  const planRunning = tasks?.some(({ status }) => status === 'QUEUED' || status === 'RUNNING')
   const model = models.data?.find((entry) => entry.is_default) ?? models.data?.[0]
+  const needsModel = !!models.data && !model?.capability?.includes('function_call')
   const attempts = practice.data?.items
-  const correct = attempts?.filter((attempt) => attempt.correct).length ?? 0
-  const completedInterviews = interviews.data?.items.filter((task) => task.status === 'SUCCEEDED').length ?? 0
-  const distribution = stages.map((stage) => ({
-    stage, count: visibleApplications?.filter((entry) => entry.stage === stage).length ?? 0,
-  })).filter(({ count }) => count > 0)
+  const correct = attempts?.filter((attempt) => attempt.correct).length
+  const confirmed = experiences.data?.filter((entry) => entry.confirmed).length
+  const progressText = hasProgress && questions.length ? completed + ' / ' + questions.length : undefined
+  const failures = [training, practice, experiences, applications, models, progress].filter(({ error }) => error)
+
+  function nextAction() {
+    if (target.loading) return { title: '正在读取当前岗位', note: '', label: '查看岗位', to: '/career/jobs' }
+    if (!job) return { title: '选定目标岗位', note: '从已有岗位中选择目标，或添加一份招聘信息。', label: '查看岗位', to: '/career/jobs' }
+    if (next) return { title: '继续岗位训练', note: next.prompt, label: '继续练习', to: trainingQuestionPath(next, jobId) }
+    if (planDone) return { title: '复盘岗位训练', note: '本轮计划已完成，回看作答记录和复习建议。', label: '查看复盘', to: preparationPath('review', scope) }
+    if (planRunning && !plan) return { title: '查看计划生成进度', note: '打开备考中心查看任务状态。', label: '查看训练计划', to: planPath }
+    if (plan || !tasks) return { title: '查看岗位训练', note: '打开备考中心查看计划和练习记录。', label: '查看训练计划', to: planPath }
+    if (needsModel) return { title: '配置训练模型', note: '为对话模型启用工具调用后，即可生成岗位训练计划。', label: '配置模型', to: '/settings/models' }
+    return { title: '制定岗位训练计划', note: '从备考中心查看题库和岗位训练计划。', label: '打开备考计划', to: planPath }
+  }
+  const action = nextAction()
 
   const steps = [
-    { title: '确认一段经历', copy: '整理项目、科研或实习经历，留作简历依据。', to: '/career/resume',
-      action: '整理经历', done: confirmed === undefined ? undefined : confirmed > 0, error: experiences.error },
-    { title: '选择目标岗位', copy: '选中一份岗位，查看匹配的面经和练习。', to: '/career/jobs',
-      action: jobs?.length ? '选择岗位' : '添加岗位', done: jobs && !!job },
-    { title: '配置 AI 教练', copy: '启用对话模型的工具调用，开始定向训练。', to: '/settings/models',
-      action: '配置模型', done: models.data && !!model?.capability?.includes('function_call'), error: models.error },
-    { title: '完成首道练习', copy: '选一道岗位方向的题，看看自己的掌握情况。', to: preparationPath('library'),
-      action: '开始练习', done: completedInterviews > 0 || (attempts && (!job || interviews.data) && attempts.length > 0),
-      error: practice.error || interviews.error },
+    { title: '选定目标岗位', note: job ? job.company + ' · ' + job.title : '保存并选中一份招聘信息',
+      done: !!job, to: job ? jobPath(job.id, 'details') : '/career/jobs', action: '选择岗位' },
+    { title: '确认简历素材', note: confirmed === undefined ? '整理项目、科研或实习经历' : '已确认 ' + confirmed + ' 条经历',
+      done: !!confirmed, to: resumeStudioPath, action: '整理经历' },
+    { title: '生成岗位训练计划', note: plan?.result?.skills?.join(' · ') || (plan ? '计划已保存' : '从岗位要求出发安排练习'),
+      done: !!plan, to: planPath, action: '查看计划' },
+    { title: '完成本轮训练', note: progressText ? '已完成 ' + progressText + ' 题' : '完成计划内的练习',
+      done: planDone, to: planDone ? preparationPath('review', scope) : next ? trainingQuestionPath(next, jobId) : planPath,
+      action: next ? '继续练习' : '查看计划' },
   ]
-  const next = steps.find((step) => step.done === false)
-  const knownSteps = steps.every((step) => step.done !== undefined)
-  const completed = steps.filter((step) => step.done).length
-  const failedQueries = [experiences, models, practice, interviews, applications].filter((query) => query.error)
+  const currentStep = next ? steps[3] : steps.find((step) => !step.done)
+  const stepsLoaded = !target.loading && !target.error && confirmed !== undefined
+    && (!job || (tasks && (!questions.length || hasProgress)))
 
-  return (
-    <div className={styles.home}>
-      <header className={styles.hero}>
-        <div className={styles.heroCopy}>
-          <div className={styles.heroLabel}><CompassOutlined /> Search Agent <span /> 求职工作台</div>
-          <h1>求职总览</h1>
-          <p>{job ? `当前准备 ${job.company} · ${job.title}` : `${nickname?.trim() ? `你好，${nickname.trim()}。` : ''}把目标岗位变成具体的准备计划。从整理经历、练习面试到跟进投递，每一步都有记录。`}</p>
-          <div className={styles.heroActions}>
-            <Link className={styles.primary} to={next?.to ?? preparationPath()}>{next?.action ?? '查看训练计划'} <ArrowRightOutlined /></Link>
-            <a className={styles.secondary} href="#career-features">浏览功能 <ArrowDownOutlined /></a>
+  return <div className={dashboard.page}>
+    <header className={dashboard.pageHead}>
+      <div><h1>求职总览</h1><p>查看当前岗位的备考进度和下一步安排。</p></div>
+      <Link className={dashboard.button} to={newJobPath}><PlusOutlined aria-hidden /> 添加岗位</Link>
+    </header>
+    {(target.error || failures.length > 0) && <Alert type="warning" showIcon
+      message={target.error || '部分求职进度暂时无法读取。'}
+      action={<Button size="small" onClick={() => {
+        if (target.error) target.reload()
+        failures.forEach(({ retry }) => retry())
+      }}>重试</Button>} />}
+    <section className={styles.hero} aria-labelledby="overview-next">
+      <div className={styles.orbit} aria-hidden="true" />
+      <div className={styles.heroCopy}>
+        <div className={styles.eyebrow}><FlagOutlined aria-hidden /> 下一步</div>
+        <h2 id="overview-next">{action.title}</h2>
+        {action.note && <p className={styles.nextNote}>{action.note}</p>}
+        <div className={styles.heroActions}>
+          <Link className={styles.continue} to={action.to}><ArrowRightOutlined aria-hidden /> {action.label}</Link>
+          {job && action.to !== planPath && <Link className={styles.secondary} to={planPath}>查看训练计划</Link>}
+        </div>
+      </div>
+      <div className={styles.focus}>
+        <header><span>当前目标岗位</span>
+          {job && <Link to={jobPath(job.id, 'details')}>岗位详情 <RightOutlined aria-hidden /></Link>}
+        </header>
+        {job ? <>
+          <div className={styles.focusJob}>
+            <span aria-hidden="true">{Array.from(job.company.trim())[0]?.toUpperCase() || <AimOutlined />}</span>
+            <div><h3>{job.title}</h3><p>{job.company}</p></div>
           </div>
-        </div>
-        <HeroArtwork />
-      </header>
-
-      <section className={`${styles.panel} ${styles.setupPanel}`} aria-labelledby="career-start-title">
-        <div className={styles.sectionHeading}>
-          <div><h2 id="career-start-title">开始求职准备</h2><p>从这些小步骤开始，建立你的第一份求职记录。</p></div>
-          <div className={styles.setupProgress} aria-live="polite">
-            <span>{knownSteps ? <><b>{completed} / {steps.length}</b> 已完成</> : steps.some((step) => step.error) ? '进度暂未读全' : '正在读取进度'}</span>
-            <div aria-hidden="true">{steps.map((step) => <i key={step.title} className={step.done ? styles.filled : undefined} />)}</div>
+          <div className={styles.progressLabel}>
+            <span>训练计划进度</span><strong>{progressText ?? (progress.error || training.error ? '读取失败' : planRunning && !plan ? '生成中' : questions.length ? '读取中…' : plan ? '已生成' : tasks ? '暂无计划' : '读取中…')}</strong>
           </div>
-        </div>
-        <ol className={styles.steps}>
-          {steps.map((step, index) => (
-            <li key={step.title}>
-              <Link to={step.to} className={`${styles.step} ${step === next ? styles.currentStep : ''} ${step.done ? styles.doneStep : ''}`}>
-                <span className={styles.stepNumber} aria-hidden="true">{step.done ? <CheckOutlined /> : `0${index + 1}`}</span>
-                <div><h3>{step.title}</h3><p>{step.copy}</p></div>
-                <span className={styles.stepAction}>{step.done ? '已完成' : step.action}<ArrowRightOutlined /></span>
-              </Link>
-            </li>
-          ))}
-        </ol>
-      </section>
-
-      <section aria-labelledby="career-progress-title">
-        <div className={`${styles.sectionHeading} ${styles.outerHeading}`}>
-          <div><h2 id="career-progress-title">我的求职进展</h2><p>{job ? `显示 ${job.title} 的练习和投递记录。` : '显示全部练习和投递记录。'}</p></div>
-          {failedQueries.length > 0 && <button type="button" className={styles.retry} onClick={() => failedQueries.forEach(({ retry }) => retry())}><ReloadOutlined /> 重试读取数据</button>}
-        </div>
-        <div className={styles.overviewGrid}>
-          <OverviewCard title="最近练习" eyebrow={job ? '当前岗位的刷题和面试' : '最近 20 次作答'} icon={<AuditOutlined />}>
-            {attempts?.length ? (
-              <>
-                <div className={styles.chartTotal}><strong>{Math.round(correct / attempts.length * 100)}%</strong><span>正确率 · {attempts.length} 次作答</span></div>
-                <div className={styles.practiceBar} aria-hidden="true">
-                  {attempts.slice().reverse().map((attempt) => <i key={attempt.requestId} className={attempt.correct ? styles.correct : styles.incorrect} />)}
-                </div>
-                <div className={styles.legend}><span><i className={styles.correct} />答对 <b>{correct}</b></span><span><i className={styles.incorrect} />答错 <b>{attempts.length - correct}</b></span></div>
-              </>
-            ) : !completedInterviews && <p className={styles.chartEmpty} role="status">
-              {practice.error || interviews.error ? '练习记录暂时无法读取。'
-                : attempts && (!job || interviews.data) ? '还没有练习记录，完成第一道题后可查看表现。' : '正在读取练习记录…'}
-            </p>}
-            {completedInterviews > 0 && <Link className={styles.chartLink} to={preparationPath('review')}>
-              最近完成 {completedInterviews} 次模拟面试 <ArrowRightOutlined />
-            </Link>}
-            <Link className={styles.chartLink} to={preparationPath('library')}>前往题库选题 <ArrowRightOutlined /></Link>
-          </OverviewCard>
-          <OverviewCard title="投递阶段" eyebrow="按当前阶段统计，含草稿" icon={<FundOutlined />}>
-            {visibleApplications?.length ? (
-              <>
-                <div className={styles.chartTotal}><strong>{visibleApplications.length}</strong><span>条申请记录</span></div>
-                <div className={styles.stageBar} aria-hidden="true">
-                  {distribution.map(({ stage, count }) => <i key={stage} style={{ flex: count, backgroundColor: stageColors[stage] }} />)}
-                </div>
-                <div className={styles.legend}>{distribution.map(({ stage, count }) => <span key={stage}><i style={{ backgroundColor: stageColors[stage] }} />{applicationStages[stage]} <b>{count}</b></span>)}</div>
-              </>
-            ) : <p className={styles.chartEmpty} role="status">{applications.error ? '申请记录暂时无法读取。' : applications.data ? '还没有申请记录，可以先为目标岗位保存一份网申草稿。' : '正在读取申请记录…'}</p>}
-            {visibleApplications?.length ? <Link className={styles.chartLink} to="/career/applications">查看投递看板 <ArrowRightOutlined /></Link> : <Link className={styles.chartLink} to="/career/apply">前往网申助手 <ArrowRightOutlined /></Link>}
-          </OverviewCard>
-        </div>
-      </section>
-
-      <section className={`${styles.panel} ${styles.featuresPanel}`} id="career-features" aria-labelledby="career-features-title">
-        <div className={styles.sectionHeading}><div><h2 id="career-features-title">功能一览</h2></div>
-          {job && <Link className={styles.chartLink} to={jobPath(job.id)}>调研当前公司 <ArrowRightOutlined /></Link>}
-        </div>
-        <div className={styles.features}>
-          {features.map(({ title, copy, to, icon: Icon, tone }) => (
-            <Link to={to} className={styles.feature} key={to}>
-              <span className={`${styles.iconBox} ${styles[tone]}`} aria-hidden="true"><Icon /></span>
-              <div><h3>{title}</h3><p>{copy}</p></div>
-              <ArrowRightOutlined className={styles.featureArrow} aria-hidden="true" />
+          {progressText && <progress className={styles.progress} value={completed} max={questions.length} aria-label="训练计划进度" />}
+        </> : <p className={styles.focusEmpty}>{target.loading ? '正在读取岗位…' : '尚未选定岗位'}</p>}
+      </div>
+    </section>
+    <section className={styles.metrics} aria-label="求职进度数据">
+      <Metric title="最近练习" value={attempts?.length} note={job ? '次作答 · 当前岗位' : '次作答 · 全部岗位'}
+        to={reviewPath} tone="violet" icon={<ReadOutlined aria-hidden />} />
+      <Metric title="练习正确率" value={attempts?.length && correct !== undefined ? Math.round(correct / attempts.length * 100) + '%' : undefined}
+        note={attempts?.length ? '答对 ' + correct + ' / ' + attempts.length + ' 题' : '最近作答'}
+        to={reviewPath} tone="green" icon={<AimOutlined aria-hidden />} />
+      <Metric title="已确认经历" value={confirmed} note="条可用于备考" to={resumeStudioPath} tone="sky" icon={<FileDoneOutlined aria-hidden />} />
+      <Metric title="申请记录" value={applications.data?.length} note="条 · 全部岗位，含草稿" to="/career/applications" tone="amber" icon={<FundOutlined aria-hidden />} />
+    </section>
+    <div className={styles.lower}>
+      <section className={styles.panel} aria-labelledby="overview-checklist">
+        <header className={styles.panelHead}>
+          <h2 id="overview-checklist">岗位准备清单</h2>
+          {stepsLoaded && <p>{steps.filter((step) => step.done).length} / {steps.length} 已完成</p>}
+        </header>
+        <ul className={styles.checklist}>
+          {steps.map((step) => <li key={step.title}>
+            <Link to={step.to} className={styles.step} data-current={currentStep === step || undefined}>
+              <span className={styles.stepIcon} data-done={step.done || undefined} aria-hidden="true">
+                {step.done ? <CheckOutlined /> : <i />}
+              </span>
+              <span className={styles.stepText}><strong>{step.title}</strong><small>{step.note}</small></span>
+              {step.done ? <span className={styles.done}>已完成</span> : <span className={styles.stepAction}>
+                {step.action} <RightOutlined aria-hidden />
+              </span>}
             </Link>
-          ))}
-        </div>
+          </li>)}
+        </ul>
       </section>
+      <CareerAssistant />
     </div>
-  )
+  </div>
 }

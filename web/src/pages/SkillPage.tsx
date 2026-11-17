@@ -10,6 +10,7 @@ import {
 import { skillApi, type BuiltinSkill, type Skill } from '@/api/skills'
 import { useSkillStore } from '@/stores/skillStore'
 import SkillEditModal from './skill/SkillEditModal'
+import SkillPackageModal from './skill/SkillPackageModal'
 
 export default function SkillPage() {
   const skills = useSkillStore((s) => s.list)
@@ -19,6 +20,7 @@ export default function SkillPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [editing, setEditing] = useState<Skill | null>(null)
   const [addingKey, setAddingKey] = useState<string | null>(null)
+  const [packaging, setPackaging] = useState<Skill | true>()
 
   useEffect(() => {
     refresh()
@@ -78,6 +80,7 @@ export default function SkillPage() {
               把「提示词 + 限定工具 + 知识库」打包成任务能力，对话中一键挂载
             </div>
           </div>
+          <Button onClick={() => setPackaging(true)}>导入技能包</Button>
           <Dropdown
             disabled={builtins.length === 0}
             menu={{
@@ -116,6 +119,7 @@ export default function SkillPage() {
                 <span className="skill-card-icon">{s.icon}</span>
                 <div className="skill-card-title">
                   {s.name}
+                  {s.package && <Tag color="purple" style={{ marginLeft: 6 }}>{s.package.activeVersion}</Tag>}
                   {s.is_builtin && (
                     <Tag color="blue" style={{ marginLeft: 6 }}>
                       模板
@@ -145,6 +149,7 @@ export default function SkillPage() {
                   </span>
                 </Tooltip>
                 <span style={{ flex: 1 }} />
+                {s.package && <Button type="text" size="small" onClick={() => setPackaging(s)}>版本</Button>}
                 <Button
                   type="text"
                   size="small"
@@ -185,6 +190,8 @@ export default function SkillPage() {
         onClose={() => setEditOpen(false)}
         onSaved={refresh}
       />
+      {packaging && <SkillPackageModal skill={packaging === true ? undefined : packaging}
+        close={() => setPackaging(undefined)} saved={refresh} />}
     </div>
   )
 }

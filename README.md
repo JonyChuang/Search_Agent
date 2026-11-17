@@ -1,327 +1,138 @@
-# Search Agent — 研究生求职与面试训练 Agent
+# Search Agent
 
-基于 [Comet](https://github.com/lm041520/Comet) 增量改造，开发仓库为 [JonyChuang/Search_Agent](https://github.com/JonyChuang/Search_Agent)。
+Search Agent 是面向研究生实习与校招的求职工作台。它以目标岗位 JD 为主线，把个人资料、训练计划、刷题、模拟面试、简历定制和投递进展连在一起。
 
-Search Agent 面向准备实习和校招的研究生。用目标 JD 和已确认的经历制定岗位训练计划，练习后生成复习建议，再整理简历和申请材料。
+## 功能
 
-**当前状态（2026-11-06）** 使用 Comet 账号登录后，可维护求职档案、经历和带招聘来源的岗位记录，查阅公开面经，按岗位方向刷题、查看历史和复习错题。求职工作流还提供岗位训练计划、单轮模拟面试、简历草稿版本、网申草稿和投递看板。Java 按登录用户隔离个人业务数据，React 通过开发代理访问求职业务接口。
+| 功能 | 使用方式 |
+| --- | --- |
+| 岗位与经历 | 管理目标岗位、公司、招聘来源和备考偏好。简历依据用户确认的经历生成。 |
+| 备考中心 | 按岗位生成训练计划、模拟题和复习建议。支持题库、错题、成组练习和进度续做。编程与 SQL 练习可接入隔离判题执行器。 |
+| 模拟面试 | 支持文字多轮面试、动态追问和逐题复盘。点评在后台执行，复盘可用于同岗位的后续训练。 |
+| 简历与投递 | 编辑简历、按岗位保存版本并导出 PDF，管理网申草稿、提交材料和投递阶段历史。Greenhouse 扩展可辅助填表，提交由用户核对并确认。 |
+| 资料与 Skill | 上传个人资料用于备考，知识库问答提供检索引用。技能中心支持求职模板，以及 ZIP 或公开 GitHub 仓库固定提交的技能包安装、更新、回退与卸载。 |
+| 任务与提醒 | 查看任务进度和运行统计，暂停、继续或取消备考任务。可关联岗位设置面试、复习和投递截止提醒。 |
 
-- [v1 启动、演示与验收记录](docs/career-agent-v1.md)
-- [第一天本地启动与验收](docs/career-agent-day-1-2026-11-06.md)
-- [经历与岗位阶段的配置和验收](docs/career-agent-profile-jobs.md)
-- [第三天题库、练习与错题复习](docs/career-agent-day-3-practice.md)
-- [第四、五天岗位训练与申请材料](docs/career-agent-day-4-5-workflow.md)
-- [逐日交付计划](docs/career-agent-delivery-plan-2026-11-12.md)
-- [Java 业务后端 + Python Agent 架构决定与实施顺序](docs/java-agent-architecture-2026-11-05.md)
-- [Agent 工程设计与简历成果路线](docs/agent-engineering-highlights-2026-11-05.md)
-- [求职产品范围与修改清单](docs/career-agent-change-list-2026-11-05.md)
-- [可点击界面概念稿（示例数据）](docs/design/career-navigation-preview.html)
-- [项目开发约定](AGENTS.md)
+[功能入口、判题执行器、Greenhouse 扩展与 Skill 包格式](docs/career-agent-release.md)
 
-下方保留 Comet 上游的功能与运行说明。上游介绍中的能力和指标不代表本项目已经验证或已完成求职场景适配。
+## 架构
 
----
-
-# Comet（彗记）— 个人 AI 知识库与记忆助手
-
-> Personal AI Knowledge & Memory Assistant
-
-Comet 是一个多用户的个人 AI 知识库 + 记忆助手：把你的文档、图片、网页沉淀成可语义检索的知识库，从对话中自动萃取「记忆」构建你的专属知识图谱，并用 LLM Agent 自主编排「知识库 / 记忆 / 联网」三类工具来回答问题。
-
----
-
-## 目录
-
-- [核心功能](#核心功能)
-- [技术栈](#技术栈)
-- [系统架构](#系统架构)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-  - [第 1 步：克隆代码](#第-1-步克隆代码)
-  - [第 2 步：启动四个存储（Docker）](#第-2-步启动四个存储docker)
-  - [第 3 步：配置并启动后端](#第-3-步配置并启动后端)
-  - [第 4 步：启动 Celery worker / beat](#第-4-步启动-celery-worker--beat)
-  - [第 5 步：启动前端](#第-5-步启动前端)
-  - [第 6 步：注册账号并配置模型](#第-6-步注册账号并配置模型)
-- [首次使用流程](#首次使用流程)
-- [常见问题](#常见问题)
-- [目录结构](#目录结构)
-- [开发约定](#开发约定)
-
----
-
-## 核心功能
-
-- **知识库 RAG**：文档（PDF/Word/Markdown/TXT/HTML）、网页、图片入库；父子分块 + IK 中文分词；ES 向量 + BM25 混合检索（可选 Rerank）；带引用溯源。
-- **图片多模态**：图片自动生成描述 / OCR / 物体 / 场景，并可语义检索。
-- **AI 自动打标签**：入库内容自动分类，复用已有标签防膨胀。
-- **记忆系统**：从「主动记住」或对话中异步萃取三元组，写入 Neo4j 四层溯源图谱（来源→片段→陈述→实体）；区分画像类实体与事件类（带时间，进时间线）；两层去重；社区聚类。
-- **智能问答**：知识库 / 记忆 / 联网三个工具做成 LangChain Agent，LLM 自主编排（强模型走原生 function calling，弱模型走 ReAct 降级）；SSE 流式输出；带引用与工具调用标记；支持多模态看图问答。
-- **搜索与导航**：全局搜索（文档 + 图片 + 记忆三排并列，语义相关度门控）、收藏夹、标签管理、每日回顾。
-- **可视化**：知识图谱（AntV X6）、事件时间线、统计仪表盘（ECharts）。
-- **情绪与音乐（v0.0.2）**：对话情绪分析（valence-arousal）、记忆深化分层与定时巩固、按「情绪 + 偏好」打分的情绪化音乐推荐 + 沉浸式播放器。
-- **角色与技能（v0.0.3）**：对话人格（角色卡，多组人设一键切换）、Skills 技能（提示词 + 工具白名单 + 绑库 + few-shot 打包，对话内即时挂载）。
-- **多知识库（v0.0.3）**：分库管理 + 按库检索开关，ES kb_id 多库过滤。
-- **记忆智能化（v0.0.3）**：反思引擎归纳「AI 眼中的你」洞察、对话每轮主动召回记忆、跨会话上下文、今日回顾的 AI 主动关心。
-- **交互增强（v0.0.3）**：划词追问、快照式对话分享（无登录公开页）、语音输入（浏览器 + 云端 ASR 双路）。
-- **深度研究与定时任务（v0.0.4）**：把「研究一个主题」拆成规划→多源检索→逐源提炼→反思补搜→大纲→分节写作的多阶段流水线,自动产出结构化带引用的报告;可定时自动跑并推送手机(Server酱 / 企微 / 钉钉 / Webhook);失败可重试,有运行历史。
-- **真人对话模式（v0.0.4）**：全局开关,所有单聊 / 群聊切到真人微信聊天风格(口语 / 多气泡逐条连发 / 不甩 markdown 报告腔)。
-- **Verifier Loop · Agent 自闭环质量保障(v0.0.5)**:每份研究报告 / 定时任务产出走独立 LLM-as-judge 按 6 维 Rubric 评分(覆盖度 / 引用对齐 / 论证深度 / 时效 / 相关性 / 可读),不合格自动选 Patch 或章节重写回炉,状态外置 DB 可中断恢复;深度研究和定时任务共用同一抽象框架。
-- **全链路可观测 + 成本核算(v0.0.5)**:基于 OpenTelemetry GenAI 规范的 trace / span 模型覆盖 Agent 全部执行链路(工具调用 / LLM / 检索 / 写作 / 审稿);每次 LLM 调用按 model 单价精确核算 CNY 成本;前端 Gantt 时间线可下钻每一步的 prompt / 回复预览、tokens / cost、错误归因。
-- **记忆审查与人类反馈闭环(v0.0.5)**:全景看 AI 关于你记住了什么(类型饼 / 置信度直方 / 30 天趋势)+ 审查低置信度实体(确认 / 修正 / 删除三按钮);用户操作沉淀到 `memory_corrections` 数据池,`human_verified` 状态回写图谱后直接提升主动召回权重。
-- **离线评测体系(v0.0.5)**:自建中文 gold 集 + C-MTEB T2Retrieval 中文检索基线 + HotpotQA distractor 多跳问答基线;C-MTEB 混合检索 **nDCG@10 = 0.98** / MRR@10 = 1.0;HotpotQA 200 题 **EM = 62% / F1 = 74.49% / Recall@4 = 95.75%**;Verifier A/B 实验证明**跨家族审稿通过率 95% 显著高于同模型自评 0%**。
-
----
-
-## 技术栈
-
-| 层 | 技术 |
-|----|------|
-| 前端 | React 18 + TypeScript + Ant Design 5 + Vite；状态 Zustand；图 AntV X6 + ECharts |
-| 后端 | FastAPI（分层：controller → service → repository → model/db）；依赖用 **uv** 管理 |
-| 业务库 | PostgreSQL 16 + SQLAlchemy 2.0（async）+ Alembic 迁移 |
-| 向量/全文 | Elasticsearch 8.17（向量 + BM25 + IK 中文分词） |
-| 记忆图谱 | Neo4j 5.26（实体-关系-事件三元组） |
-| 异步/缓存 | Celery + Redis（多队列：parse / memory / beat / research） |
-| LLM 编排 | LangChain（Agent 工具循环，方案B） |
-
----
-
-## 系统架构
-
-```
-                         ┌─────────────┐
-        浏览器  ───────▶ │  web (Vite) │  http://localhost:5173
-                         └──────┬──────┘
-                                │  /api 代理
-                         ┌──────▼──────┐
-                         │  api (FastAPI)  http://localhost:8000
-                         └──┬───┬───┬───┬──┘
-        ┌───────────────────┘   │   │   └────────────────────┐
-        ▼                       ▼   ▼                        ▼
- ┌────────────┐        ┌──────────────┐  ┌──────────┐  ┌──────────┐
- │ PostgreSQL │        │Elasticsearch │  │  Neo4j   │  │  Redis   │
- │ 业务数据   │        │ 向量+全文检索│  │ 记忆图谱 │  │ 缓存+队列│
- └────────────┘        └──────────────┘  └──────────┘  └────┬─────┘
-                                                            │ broker
-                                       ┌────────────────────┴────────┐
-                                       ▼                             ▼
-                              ┌─────────────────┐         ┌─────────────────┐
-                              │ celery worker   │         │ celery beat     │
-                              │ 解析/萃取/聚类   │         │ 定时回顾/聚类    │
-                              └─────────────────┘         └─────────────────┘
+```mermaid
+flowchart LR
+    UI["React / TypeScript"] -->|"/api/career"| Java["Spring Boot / Java 21"]
+    UI -->|"登录、对话、资料与技能"| Agent["FastAPI / Python 3.12"]
+    Java -->|"派发任务"| Agent
+    Agent -->|"业务工具与任务回写"| Java
+    Java --> DB["MySQL / Flyway"]
+    Agent --> Store["PostgreSQL / Alembic"]
+    Agent --> Search["Elasticsearch"]
+    Agent --> Queue["Redis / Celery"]
+    Agent --> Graph["Neo4j"]
 ```
 
-开发期：四个存储用 Docker 跑，应用（api / worker / beat / web）在本机手动起，方便热重载和调试。
+- **Java 业务服务**负责鉴权、岗位和材料、任务调度及业务状态。MySQL 短事务原子认领任务，通过租约、执行代次和幂等键处理过期回写与重复请求。
+- **Python Agent**负责模型调用、Function Calling、上下文预算、Skill 加载和资料检索。训练任务持久化题目目录与计划草稿，可从检查点恢复。知识库使用父子分块、向量与 BM25 混合召回，并支持可选重排。
+- **React 前端**提供求职工作台、流式对话、文档预览和任务状态。页面与 Agent 共用 Java 业务接口及权限规则。
 
----
+## 本地启动
 
-## 环境要求
+准备 Docker Compose、JDK 21、Python 3.12、uv 和 Node.js 22 或更新的 LTS 版本。以下命令以 PowerShell 为例。
 
-| 软件 | 版本 | 说明 |
-|------|------|------|
-| Docker Desktop | 最新 | 跑四个存储 |
-| Python | 3.12+ | 后端 |
-| uv | 0.5+ | Python 依赖管理（替代 pip）。安装见 https://docs.astral.sh/uv/ |
-| Node.js | 18+ | 前端 |
-| 一个 LLM API Key | — | 至少需要一个 **对话模型** + 一个 **Embedding 模型**。支持 OpenAI 兼容的 provider：OpenAI / 通义千问 / 豆包 / DeepSeek / 智谱。推荐：对话用 DeepSeek，Embedding 用智谱 `embedding-3` |
+### 1. 配置并启动存储
 
-> 存储默认占用端口：PostgreSQL `5432`、Elasticsearch `9200`、Neo4j `7474/7687`、Redis `6379`。确保这些端口未被占用。
+从仓库根目录创建本地配置。已有配置可继续使用。
 
----
-
-## 快速开始
-
-下面以「存储用 Docker + 应用本地起」的开发模式为例，按顺序执行即可跑起来。命令在 Windows 下用 PowerShell / bash 均可，命令分隔符用 `;`。
-
-### 第 1 步：克隆代码
-
-```bash
-git clone git@github.com:lm041520/Comet.git
-cd Comet
+```powershell
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+if (!(Test-Path api/.env)) { Copy-Item api/.env.example api/.env }
 ```
 
-### 第 2 步：启动四个存储（Docker）
+| 配置 | 设置位置 |
+| --- | --- |
+| `JWT_SECRET` | `api/.env` 与 Java 启动终端使用相同的随机值，默认 HS256 要求至少 32 字节。 |
+| `CAREER_AGENT_INTERNAL_TOKEN` | `api/.env` 与 Java 启动终端使用同一个随机令牌。 |
+| `CAREER_MYSQL_PASSWORD` | 根目录 `.env` 和 Java 启动终端使用相同的 MySQL 密码。若使用已有数据卷，沿用该卷初始化时的密码。 |
+| `FERNET_KEY` | 填入 `api/.env`。安装 Python 依赖后，可在 `api/` 运行 `uv run --locked python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` 生成。使用已有 PostgreSQL 数据时沿用原密钥。 |
 
-根目录复制环境变量模板（用于 docker-compose 里的存储密码等）：
+如果改了根目录 `.env` 中的 PostgreSQL 或 Neo4j 登录配置，也要同步 `api/.env`。
 
-```bash
-cp .env.example .env    # Windows: copy .env.example .env
+```powershell
+docker compose up -d --build --wait postgres elasticsearch neo4j redis
+docker compose -f compose.career.yml up -d --wait
 ```
 
-只起四个存储容器（不起应用容器，应用本地跑）：
+### 2. 启动 Python Agent
 
-```bash
-docker compose up -d postgres elasticsearch neo4j redis
+在单独的终端从仓库根目录执行。安装依赖后确认 `api/.env` 已配置有效的 Fernet 密钥。
+
+```powershell
+Set-Location api
+uv sync --locked --python 3.12
+uv run --locked alembic upgrade head
+uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-> Elasticsearch 镜像是自定义构建的（内置 IK 中文分词插件，见 `docker/es/Dockerfile`），首次会自动 build，需要几分钟。
-> 等容器健康后再继续。可用 `docker compose ps` 查看状态，ES 启动较慢（约 30~60 秒）。
+文档上传后的索引构建需要 Celery Worker。在另一个终端进入 `api/` 后运行。
 
-### 第 3 步：配置并启动后端
-
-```bash
-cd api
-uv sync                       # 安装依赖（自动建 .venv）
-cp .env.example .env          # Windows: copy .env.example .env
+```powershell
+uv run --locked celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=threads --concurrency=4
 ```
 
-编辑 `api/.env`，**必须修改的两项密钥**：
+### 3. 启动 Java 后端和前端
 
-```dotenv
-# JWT 签名密钥，随便一段长随机字符串
-JWT_SECRET=请改成一段随机长字符串
+从仓库根目录另开终端启动 Java。Flyway 会在启动时迁移 MySQL。
 
-# API Key 加密密钥（Fernet），用下面命令生成一串填进来
-FERNET_KEY=请填生成的-Fernet-Key
+```powershell
+$env:JWT_SECRET = Read-Host 'api/.env 中的 JWT_SECRET' -MaskInput
+$env:CAREER_AGENT_INTERNAL_TOKEN = Read-Host 'api/.env 中的内部令牌' -MaskInput
+$env:CAREER_MYSQL_PASSWORD = Read-Host '本地 MySQL career 用户密码' -MaskInput
+Set-Location backend
+.\mvnw.cmd spring-boot:run
 ```
 
-生成 `FERNET_KEY`：
+从仓库根目录另开终端启动前端。
 
-```bash
-uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-其余存储地址默认指向 `localhost`，与第 2 步的容器端口一致，无需改动。
-
-执行数据库迁移（建表）：
-
-```bash
-uv run alembic upgrade head
-```
-
-启动后端：
-
-```bash
-uv run python run.py
-```
-
-验证：浏览器或 curl 访问
-
-- `http://localhost:8000/api/hello` → 返回欢迎信息
-- `http://localhost:8000/api/health` → 四个存储应全部 `ok`
-
-> 后端启动时会自动初始化 ES 索引和 Neo4j 图谱约束/索引，无需手动操作。
-
-### 第 4 步：启动 Celery worker / beat
-
-文档解析、记忆萃取、社区聚类等耗时任务走异步队列，需要单独的进程。**新开一个终端**，在 `api` 目录下：
-
-```bash
-# Windows 必须用 --pool=solo（prefork 在 Windows 有权限问题）
-uv run celery -A app.celery_app.celery_app worker -l info -Q default,parse,memory,beat,research --pool=solo
-```
-
-> Linux / macOS 可去掉 `--pool=solo`，并用 `--concurrency=N` 提高并发。
-> 说明：`research` 队列跑「定时任务的深度研究」（重活），与轻量的调度心跳（`beat` 队列）分开，避免长任务堵住每分钟心跳。Windows `--pool=solo` 是单进程串行，若想心跳完全不被研究阻塞，可**再开一个终端只跑研究队列**：`uv run celery -A app.celery_app.celery_app worker -l info -Q research --pool=solo`，让原 worker 的 beat 队列保持空闲。
-
-定时任务（每日回顾、定时全量聚类）需要 beat，**再开一个终端**（可选，不影响主流程）：
-
-```bash
-uv run celery -A app.celery_app.celery_app beat -l info
-```
-
-### 第 5 步：启动前端
-
-**新开一个终端**：
-
-```bash
-cd web
-npm install
+```powershell
+Set-Location web
+npm ci
 npm run dev
 ```
 
-打开 `http://localhost:5173`（已配置 `/api` 代理到后端 8000，无需额外配置跨域）。
+打开 [本地工作台](http://localhost:5173)，注册或登录后进入「设置 → 模型配置」。配置支持工具调用的默认对话模型。需要知识库索引和检索时，再配置输出维度与 `EMBEDDING_DIMS` 一致的 Embedding 模型。
 
-### 第 6 步：注册账号并配置模型
+| 检查 | 地址 |
+| --- | --- |
+| Java 与 Agent 联通 | [`/api/career/health`](http://localhost:5173/api/career/health) |
+| Python 存储连接 | [`/api/health`](http://localhost:5173/api/health) |
 
-1. 打开前端，点「注册」创建账号，登录。
-2. 进入 **设置 → 模型配置**，至少添加两个模型：
-   - **对话模型**（type=chat）：如 DeepSeek `deepseek-chat`，填 base_url、API Key。强模型建议勾上 `function_call` 能力，问答时走原生工具调用。
-   - **Embedding 模型**（type=embedding）：如 智谱 `embedding-3`（维度固定 1024，与 `EMBEDDING_DIMS` 一致）。
-   - 可选：多模态模型（看图问答）、Rerank 模型、联网搜索（type=websearch，provider 选千帆/tavily）。
-3. 每个模型添加后点「测试连接」，通过后「设为默认」。
+## 容器部署
 
-到这里就可以开始用了。
+根目录 `.env` 需要配置 `JWT_SECRET`、`FERNET_KEY`、`CAREER_MYSQL_PASSWORD` 和 `CAREER_AGENT_INTERNAL_TOKEN`。在 `web/nginx.conf` 设置部署域名与证书文件名，并将证书放入 `web/certs/`。
 
----
-
-## 首次使用流程
-
-1. **知识库**：上传一个 PDF 或导入一个网页 → 等状态变「完成」（解析+分块+向量化是异步的）→ 用语义检索能搜到内容。
-2. **记忆**：进「记忆 → 我的画像」，在输入框写一段关于你自己的话（如「我在腾讯做后端，养了只叫多多的小狗，去年6月去上海看了周杰伦演唱会」）点「记住」→ worker 萃取后，画像出现实体、时间线出现事件、知识图谱出现节点。
-3. **对话**：进「对话」，问知识库相关问题 / 记忆相关问题 / 开联网开关问实时信息，观察 AI 自动调用对应工具并给出带引用的流式回答。
-4. **其它**：全局搜索（顶栏）、收藏夹、知识图谱、统计仪表盘、每日回顾。
-
----
-
-## 常见问题
-
-**Q：`/api/health` 某个存储显示连接失败？**
-确认对应容器已起且健康（`docker compose ps`）。ES 启动慢，多等一会儿；端口被占用会连不上。
-
-**Q：上传文档后一直「处理中」/ 记忆一直「萃取中」？**
-说明 Celery worker 没起或队列不对。确认第 4 步的 worker 在跑，队列包含 `parse,memory`；Windows 必须加 `--pool=solo`。看 worker 终端日志排错。
-
-**Q：对话报「未配置对话模型」/ 检索没结果？**
-去模型配置确认已添加并「设为默认」对应类型的模型；Embedding 模型必须配置，否则无法向量化与检索。
-
-**Q：中文检索效果差？**
-确认用的是自定义构建的 ES 镜像（含 IK 分词）。如果误用了官方镜像，删掉 ES 容器和卷重新 `docker compose up -d --build elasticsearch`。
-
-**Q：知识图谱 / 时间线是空的？**
-图谱和事件来自记忆萃取。先用「主动记住」录入带信息（尤其带时间的经历）的文本并等萃取完成。事件萃取需要文本里有「一次性发生 + 有明确时间」的经历才会生成事件节点。
-
-**Q：改了数据库模型怎么办？**
-`uv run alembic revision --autogenerate -m "说明"` 生成迁移，检查脚本后 `uv run alembic upgrade head`。
-
----
-
-## 目录结构
-
-```
-Comet/
-├── api/                      # 后端 FastAPI
-│   ├── app/
-│   │   ├── controllers/      # 路由层
-│   │   ├── services/         # 业务逻辑
-│   │   ├── repositories/     # 数据访问（含 neo4j/ 子目录）
-│   │   ├── models/           # SQLAlchemy ORM 模型
-│   │   ├── schemas/          # Pydantic 请求/响应
-│   │   ├── core/             # 横切基础设施
-│   │   │   ├── rag/          #   知识库检索（分块/解析/索引/混合检索）
-│   │   │   ├── memory/       #   记忆（预处理/萃取/检索/聚类 + prompts）
-│   │   │   ├── agent/        #   Agent 工具编排（方案B）
-│   │   │   ├── llm/          #   LLM 客户端与工厂
-│   │   │   └── storage/      #   文件存储（本地/OSS）
-│   │   ├── tasks/            # Celery 异步任务
-│   │   ├── db/               # 四存储连接（postgres/elastic/neo4j/redis）
-│   │   ├── config.py         # 配置（pydantic-settings，读 .env）
-│   │   ├── main.py           # FastAPI 入口
-│   │   └── celery_app.py     # Celery 多队列配置
-│   ├── migrations/           # Alembic 迁移
-│   ├── run.py                # 本地启动入口
-│   └── pyproject.toml        # 依赖（uv 管理）
-├── web/                      # 前端 React + TS + AntD
-│   └── src/
-│       ├── api/              # 请求封装（client + 各模块）
-│       ├── pages/            # 页面
-│       ├── components/       # 通用组件
-│       ├── layouts/          # 布局
-│       └── stores/           # Zustand 状态
-├── docker/es/                # 内置 IK 分词的 ES 镜像
-├── docker-compose.yml        # 存储 + 应用容器编排
-├── .env.example              # 根环境变量模板（docker-compose 用）
-└── api/.env.example          # 后端环境变量模板（本地裸跑用）
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
 ```
 
----
+## 评测与验证
 
-## 开发约定
+| 评测 | 实测结果 |
+| --- | --- |
+| RAG 检索 | 在 48 篇中文技术短文档、40 条标注查询上，混合检索 Recall@5 为 **90.00%**，较 BM25 提高 **5.00 个百分点**。Hit@5 为 **92.50%**，MRR@5 为 **0.8562**。评测使用本地 BGE-small-zh-v1.5 向量，关闭 Rerank。 |
+| 岗位上下文 | 在 72 条合成对话、144 条约束标注上，约束召回率从固定 40 条消息基线的 **83.33%** 提升至 **98.61%**，平均历史片段 Token 减少 **50.89%**。 |
+| Java 任务调度 | 隔离 MySQL 上的 36 组并发负载中，540 个任务无重复认领，540 次重复请求均返回原任务。24 次租约到期接管全部成功，并拒绝了旧执行者的回写。 |
+| 训练断点恢复 | 两处故障注入中，题目目录保存后恢复需 **1 次**模型调用，计划草稿保存后恢复需 **0 次**，最终各保留 **1 份计划**。 |
 
-- 后端依赖用 **uv**（`uv add xxx` / `uv run xxx`），不要直接用 pip。
-- 分层严格单向：controller → service → repository → model/db。
-- 文件命名全称后缀：`xxx_model.py` / `xxx_repository.py` / `xxx_service.py` / `xxx_controller.py` / `xxx_schema.py`。
-- 统一响应 `{ code, message, data }`；失败用中文提示。
-- 改完代码自检：后端 `uv run ruff check .`，前端 `npx tsc --noEmit`。
-- 业务表都带 `user_id` 做多租户隔离；API Key 等敏感信息用 Fernet 加密存储。
+[数据集、指标口径与复跑命令](docs/career-agent-evaluation.md) · [训练恢复实测](docs/career-agent-training-checkpoints.md)
+
+开发验证包括 `api/` 下的 `uv run --locked ruff check .`、`backend/` 下使用独立 MySQL 测试库运行的 `.\mvnw.cmd verify`，以及 `web/` 下的 `npx tsc --noEmit` 与 `npm run build`。
+
+## 目录
+
+| 路径 | 内容 |
+| --- | --- |
+| [backend/](backend/) | Spring Boot 业务服务、Flyway 迁移和集成测试 |
+| [api/](api/) | FastAPI、Agent、知识库、Celery 和 Alembic 迁移 |
+| [api/eval/](api/eval/) | 标注测试集与评测脚本 |
+| [web/](web/) | React 求职工作台 |
+| [tools/](tools/) | 判题执行器与 Greenhouse 浏览器扩展 |
+| [docs/](docs/) | 架构、功能指南与评测记录 |

@@ -47,6 +47,14 @@ public class ExperienceService {
         return find(userId, id);
     }
 
+    @Transactional
+    public void confirmFromResume(String userId, UUID id, Input entry) {
+        validate(entry);
+        mapper.insertIfAbsent(userId, id.toString(), entry);
+        mapper.update(userId, id.toString(), entry);
+        find(userId, id.toString());
+    }
+
     void delete(String userId, String id) {
         if (mapper.delete(userId, id) == 0) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "经历不存在");
@@ -60,7 +68,7 @@ public class ExperienceService {
         }
     }
 
-    record Input(
+    public record Input(
             @Pattern(regexp = "education|research|project|internship", message = "请选择有效的经历类型")
             @NotBlank(message = "请选择经历类型") String type,
             @NotBlank(message = "请输入经历名称") @Size(max = 160, message = "经历名称最多 160 字") String title,

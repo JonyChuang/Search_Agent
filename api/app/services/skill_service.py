@@ -79,7 +79,9 @@ class SkillService:
     async def update(
         self, user_id: uuid.UUID, skill_id: uuid.UUID, body: SkillUpdate
     ) -> Skill:
-        skill = await self._get_or_404(user_id, skill_id)
+        skill = await self.repo.get(user_id, skill_id, lock=True)
+        if skill is None:
+            raise BizError("技能不存在", code=4050, status_code=404)
         fields = body.model_dump(exclude_unset=True)
         if "name" in fields and fields["name"] is not None:
             skill.name = fields["name"].strip()
@@ -90,6 +92,11 @@ class SkillService:
         if "prompt" in fields and fields["prompt"] is not None:
             skill.prompt = fields["prompt"]
         if "tool_keys" in fields and fields["tool_keys"] is not None:
+            if skill.package_id:
+                from app.services.skill_packages import active_release
+
+                if set(fields["tool_keys"]) - set(active_release(skill)["manifest"]["tools"]):
+                    raise BizError("只能选择当前技能包声明的只读工具", code=4065)
             skill.tool_keys = fields["tool_keys"]
         if "kb_id" in fields:
             skill.kb_id = await self._validate_kb(user_id, fields["kb_id"])
@@ -185,6 +192,8 @@ class SkillService:
 
     @staticmethod
     def to_out_dict(skill: Skill) -> dict:
+        from app.services.skill_packages import package_details
+
         return {
             "id": str(skill.id),
             "name": skill.name,
@@ -196,4 +205,5 @@ class SkillService:
             "enabled": skill.enabled,
             "config": skill.config or {},
             "is_builtin": skill.is_builtin,
+            "package": package_details(skill.package_data),
         }

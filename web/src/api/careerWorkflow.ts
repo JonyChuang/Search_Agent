@@ -1,6 +1,8 @@
 import client from './client'
 import type { ExperienceInput } from './career'
 import type { Question } from './practice'
+import type { ResumeTemplate } from './resumeStudio'
+import type { ApplicationReceipt, MaterialsView } from './applicationWorkspace'
 
 type Response<T> = { code: number; message: string; data: T }
 type JobRequest = { jobId: string }
@@ -11,20 +13,22 @@ export type TaskKind = 'TRAINING' | 'REVIEW' | 'INTERVIEW' | 'PREPARATION' | 'DI
 export interface OpenQuestion {
   topic: string
   prompt: string
-  rubric: string[]
 }
+
+export interface TaskReference { id: string; title: string; revision: string }
 
 export interface CareerTask {
   id: string
   kind: TaskKind
-  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED'
-  request: { jobId?: string; questionVersion?: number }
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'WAITING_USER' | 'CANCELLED'
+  request: { jobId?: string; questionVersion?: number; topic?: string; purpose?: 'NOTES'; planId?: string; previousPlanId?: string }
   job: string
-  interview: { prompt: string; gradingVersion: number; sourceUrl: string; answer: string } | null
+  interview: { prompt: string; gradingVersion: number; sourceUrl: string; answer: string; rubric?: string[]; referenceAnswer?: string } | null
   result: {
     analysis?: string
     questions?: (Pick<Question, 'id' | 'version' | 'prompt'> & { kind?: 'OPEN' })[]
     openQuestions?: OpenQuestion[]
+    notes?: { title: string; summary: string; reference: number }[]
     skills?: string[]
     steps?: string[]
     feedback?: string
@@ -34,7 +38,7 @@ export interface CareerTask {
   error: string | null
   generation: number
   trainingStep?: 'FIND_QUESTIONS' | 'GENERATE_PLAN' | 'SAVE_PLAN' | 'COMPLETE' | null
-  references?: { id: string; title: string; revision: string }[] | null
+  references?: TaskReference[] | null
   createdAt: string
 }
 
@@ -55,11 +59,12 @@ export interface JobMemory {
 
 export interface Resume {
   id: string
-  jobId: string
+  jobId: string | null
   company: string
   jobTitle: string
   evidence: (ExperienceInput & { id: string })[]
   createdAt: string
+  template?: ResumeTemplate | null
 }
 
 export const applicationStages = {
@@ -86,12 +91,17 @@ export interface Application extends Draft {
   sourceUrl: string | null
   stage: Stage
   revision: number
+  updatedAt: string
 }
 
 export interface ApplicationEvent {
   stage: Stage
   note: string | null
   createdAt: string
+  eventType: 'STAGE' | 'MATERIALS_UPDATED'
+  materials: { resumeId: string | null; resumeTitle: string | null; resumeCreatedAt: string | null; answers: string;
+    workspace?: MaterialsView } | null
+  receipt?: ApplicationReceipt | null
 }
 
 async function get<T>(path: string, signal?: AbortSignal, params?: Record<string, unknown>) {
@@ -103,8 +113,8 @@ async function post<T>(path: string, input?: object) {
 }
 
 export const careerWorkflow = {
-  tasks: (kind: TaskKind, page: number, signal: AbortSignal, jobId?: string) =>
-    get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page, jobId }),
+  tasks: (kind: TaskKind, page: number, signal: AbortSignal, jobId?: string, content?: 'notes' | 'questions') =>
+    get<{ items: CareerTask[]; hasMore: boolean }>('/career/tasks', signal, { kind, page, jobId, content }),
   task: (id: string, signal: AbortSignal) => get<CareerTask>(`/career/tasks/${encodeURIComponent(id)}`, signal),
   taskEvents: (id: string, signal: AbortSignal) => get<TaskEvent[]>(`/career/tasks/${id}/events`, signal),
   trainingProgress: (id: string, signal: AbortSignal) =>
@@ -112,14 +122,17 @@ export const careerWorkflow = {
   memory: (jobId: string, signal: AbortSignal) => get<JobMemory>(`/career/jobs/${jobId}/memory`, signal),
   saveMemory: async (jobId: string, input: JobMemory) =>
     (await client.put<unknown, Response<JobMemory>>(`/career/jobs/${jobId}/memory`, input)).data,
-  prepare: (input: JobRequest & PreparationInput & { requestId: string }) => post<CareerTask>('/career/tasks/preparation', input),
+  prepare: (input: JobRequest & PreparationInput & { requestId: string; topic?: string; purpose?: 'NOTES' }) => post<CareerTask>('/career/tasks/preparation', input),
   discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
-  training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string; preferredQuestion?: string }) =>
+  training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string; preferredQuestion?: string;
+    previousPlanId?: string; reviewTaskId?: string }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
   interview: (input: JobRequest & PreparationInput & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>
     post<CareerTask>('/career/tasks/interview', input),
   retry: (id: string) => post<CareerTask>(`/career/tasks/${id}/retry`),
+  changeState: (task: CareerTask, action: 'PAUSE' | 'RESUME' | 'CANCEL') =>
+    post<CareerTask>(`/career/tasks/${task.id}/state`, { action, status: task.status, generation: task.generation }),
   resumes: (signal: AbortSignal) => get<Resume[]>('/career/resumes', signal),
   generate: (input: JobRequest & { requestId: string; experienceIds: string[] }) =>
     post<Resume>('/career/resumes', input),
@@ -127,7 +140,7 @@ export const careerWorkflow = {
   createApplication: (input: JobRequest & Draft) => post<Application>('/career/applications', input),
   updateApplication: async (id: string, input: Draft & { revision: number }) =>
     (await client.put<unknown, Response<Application>>(`/career/applications/${id}`, input)).data,
-  updateStage: (id: string, input: { stage: Stage; revision: number; note?: string }) =>
+  updateStage: (id: string, input: { stage: Stage; revision: number; note?: string; receipt?: ApplicationReceipt }) =>
     post<Application>(`/career/applications/${id}/stage`, input),
   events: (id: string, signal: AbortSignal) => get<ApplicationEvent[]>(`/career/applications/${id}/events`, signal),
 }

@@ -27,7 +27,7 @@ class CareerRun(BaseModel):
     id: UUID
     lease: UUID
     userId: UUID
-    kind: Literal["TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"]
+    kind: Literal["TRAINING", "REVIEW", "INTERVIEW", "INTERVIEW_TURN", "PREPARATION", "DISCOVERY"]
     context: dict
     trainingCatalog: list[dict] | None = None
     agentContext: dict | None = None
@@ -64,12 +64,23 @@ class CareerEvaluation(BaseModel):
     feedback: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=6000)]
 
 
+class InterviewTurnEvaluation(BaseModel):
+    accuracy: int = Field(ge=1, le=5, description="内容准确性与切题程度")
+    evidence: int = Field(ge=1, le=5, description="举例、论证和验证依据")
+    structure: int = Field(ge=1, le=5, description="回答的组织与表达")
+    feedback: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1400)]
+    followUp: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)] | None = Field(
+        description="需要了解的一个具体问题，无需追问时为 null",
+    )
+
+
 class OpenQuestion(BaseModel):
     topic: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
     prompt: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
     rubric: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]] = Field(
         min_length=1, max_length=5,
     )
+    referenceAnswer: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2000)]
 
 
 class JobPreparation(BaseModel):
@@ -77,6 +88,16 @@ class JobPreparation(BaseModel):
         min_length=1, max_length=8,
     )
     openQuestions: list[OpenQuestion] = Field(min_length=1, max_length=5)
+
+
+class ExtractedNote(BaseModel):
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    summary: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1500)]
+    reference: int = Field(ge=1, le=3, description="原资料在 documents 中的 reference 编号")
+
+
+class PreparationNotes(BaseModel):
+    notes: list[ExtractedNote] = Field(max_length=5)
 
 
 class MissingCareerTools(Exception):
@@ -161,13 +182,32 @@ def career_skill(run: CareerRun) -> tuple[type[BaseModel], dict]:
         instructions = (
             "你是求职训练教练。结合 JD 和用户确认的经历分析岗位要求、已有依据和待补能力，"
             "先查题，再从题库挑选相关题目并保存中文训练计划。给出可执行的复习顺序。"
+            "如有 interviewFeedback，针对本岗位多轮面试中有作答依据的薄弱主题安排复习，优先从题库匹配相关题目。"
+        )
+    elif run.kind == "PREPARATION" and run.context.get("purpose") == "NOTES":
+        schema = PreparationNotes
+        instructions = (
+            "仅从 documents 中整理已经记载的面试过程或面试经历。每条给出中文标题、简短摘要和原资料 reference 编号。"
+            "只保留原文能支持的事实，隐去人名、联系方式和候选人身份等隐私。"
+            "技术笔记、题目列表或模拟问答不能当作真实面试经历；没有明确面试过程时返回空列表。"
         )
     elif run.kind == "PREPARATION":
         schema = JobPreparation
         instructions = (
             "从目标岗位描述和已确认的岗位技能中提炼能力标签，生成三道与实际职责相关的中文开放式模拟面试题，"
-            "每题给出明确、可以据此评价回答的评分要点。岗位覆盖不限于技术类。"
+            "指定 topic 时围绕该主题出题。每题给出评分要点和一份可行的参考思路。岗位覆盖不限于技术类。"
             "以岗位要求为主，可参考选中的个人资料，不能声称题目是公司面试真题。"
+        )
+    elif run.kind == "INTERVIEW_TURN":
+        schema = InterviewTurnEvaluation
+        instructions = (
+            "你在主持一场面向目标岗位的中文模拟面试。对照 question.rubric 评价本轮实际回答 answer。"
+            "如果输入中有 followUp，则它是本轮的题目，mainAnswer 仅提供背景。"
+            "三项评分均为 1 到 5 分，1 表示缺失或明显有误，3 表示基本达到，5 表示充分且有证据。"
+            "在 feedback 指出回答中的具体依据或缺漏，并给出一项可执行的改进。"
+            "仅在 allowFollowUp 为 true 且回答留下值得澄清的具体缺口时，设置一个自然、简短的中文 followUp，"
+            "优先针对用户刚提到的行动、取舍或证据，避免重复原题和透露答案。其他情况 followUp 必须是 null。"
+            "内容和评分仅基于用户作答，不得虚构用户经历或做录用判断。"
         )
     elif run.kind == "INTERVIEW":
         if run.context.get("question", {}).get("kind") == "OPEN":
@@ -181,6 +221,7 @@ def career_skill(run: CareerRun) -> tuple[type[BaseModel], dict]:
         instructions = (
             "你是求职复习教练。用给出的练习记录和解析解释掌握情况与薄弱点，"
             "引用题目或具体作答，区分尚未练习与已掌握，给出下一步复习动作。"
+            "interviewFeedback 是本岗位多轮面试的主题和点评。题目编号或版本不同的作答只能作为主题层面的复习证据。"
             "练习表现不能写成用户的履历成果。"
         )
     return schema, {"id": run.kind.lower(), "version": 1, "instructions": instructions}
@@ -192,8 +233,21 @@ async def load_career_skill(run: CareerRun, skill: dict, repository: SkillReposi
         selected = await repository.get(run.userId, UUID(selected_id))
         if not selected or not selected.enabled:
             raise CareerSkillUnavailable()
-        skill = {**skill, "selected": {"id": selected_id, "revision": selected.updated_at.isoformat(),
-                                      "guidance": excerpt(selected.prompt, 750)}}
+        from app.services.skill_packages import active_release, effective_prompt
+
+        release = active_release(selected)
+        saved_skill = run.agentContext["skill"].get("selected") if run.agentContext else None
+        if release and saved_skill and saved_skill.get("packageVersion"):
+            if saved_skill.get("id") != selected_id or not any(
+                item["manifest"]["version"] == saved_skill["packageVersion"] for item in selected.package_data["releases"]
+            ):
+                raise CareerSkillUnavailable()
+            return {**skill, "selected": saved_skill}
+        descriptor = {"id": selected_id, "revision": selected.updated_at.isoformat(),
+                      "guidance": excerpt(effective_prompt(selected), 750)}
+        if release:
+            descriptor["packageVersion"] = release["manifest"]["version"]
+        skill = {**skill, "selected": descriptor}
     if run.agentContext is not None and run.agentContext["skill"].get("selected") != skill.get("selected"):
         raise CareerSkillUnavailable()
     return skill
@@ -309,7 +363,8 @@ async def generate_plan(
         "只调用一次 create_training_plan，填写岗位分析、1 至 8 个学习步骤和 1 至 8 道题。"
         "逐字使用目录中的题目 ID 和版本号，题目不得重复。若题库方向与 JD 不完全吻合，"
         "从目录选最相关的题目，并在岗位分析中说明覆盖缺口。若上下文有 preferredQuestion，"
-        "计划必须包含指定 ID 的题目。" + SOURCE_INSTRUCTIONS
+        "计划必须包含指定 ID 的题目。若有 revisionReview，使用原计划和复盘改进训练，说明调整依据。"
+        + SOURCE_INSTRUCTIONS
     )
     catalog_json = json.dumps(catalog, ensure_ascii=False)
     allowed = {(entry["id"], entry["version"]) for entry in catalog}

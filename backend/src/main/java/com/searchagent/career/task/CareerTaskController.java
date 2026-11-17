@@ -55,8 +55,9 @@ class CareerTaskController {
     @GetMapping
     CareerResponse<CareerTasks.TaskPage> list(@CareerUser String user, @RequestParam String kind,
             @RequestParam(required = false) UUID jobId,
+            @RequestParam(required = false) String content,
             @RequestParam(defaultValue = "1") int page) {
-        return CareerResponse.ok(tasks.list(user, kind, jobId, page));
+        return CareerResponse.ok(tasks.list(user, kind, jobId, content, page));
     }
 
     @GetMapping("/{id}")
@@ -77,6 +78,12 @@ class CareerTaskController {
     @PostMapping("/{id}/retry")
     CareerResponse<CareerTasks.Task> retry(@CareerUser String user, @PathVariable UUID id) {
         return CareerResponse.ok(tasks.retry(user, id));
+    }
+
+    @PostMapping("/{id}/state")
+    CareerResponse<CareerTasks.Task> state(@CareerUser String user, @PathVariable UUID id,
+            @Valid @RequestBody CareerTasks.TaskTransition input) {
+        return CareerResponse.ok(tasks.changeState(user, id, input));
     }
 }
 

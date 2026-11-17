@@ -10,7 +10,7 @@ import { useCareerQuery } from './useCareerQuery'
 import { trainingQuestionPath } from './TrainingPlanCard'
 import styles from './workspace.module.css'
 
-const labels = { SUCCEEDED: '已生成', FAILED: '失败', QUEUED: '待执行', RUNNING: '运行中' }
+const labels = { SUCCEEDED: '已生成', FAILED: '失败', QUEUED: '待执行', RUNNING: '运行中', WAITING_USER: '已暂停', CANCELLED: '已取消' }
 
 export default function JobResearchSidebar({ jobId }: { jobId: string }) {
   const load = useCallback(async (signal: AbortSignal) => {

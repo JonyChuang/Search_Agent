@@ -11,15 +11,17 @@ interface Props<T> {
   defaults: () => Partial<T>
   normalize: (values: T) => T
   onChange?: () => void
+  initialCreate?: boolean
   children: ReactNode
   render: (entry: T & { id: string }) => ReactNode
 }
 
 export default function CareerRecordList<T extends object>({
-  label, className, api, defaults, normalize, children, render, onChange,
+  label, className, api, defaults, normalize, children, render, onChange, initialCreate = false,
 }: Props<T>) {
   const { data, setData, error, retry } = useCareerQuery(api.list)
-  const [editor, setEditor] = useState<{ id?: string; values: Partial<T> }>()
+  const [editor, setEditor] = useState<{ id?: string; values: Partial<T> } | undefined>(() =>
+    initialCreate ? { values: defaults() } : undefined)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [saveError, setSaveError] = useState<string>()
@@ -30,6 +32,7 @@ export default function CareerRecordList<T extends object>({
   }
 
   async function save(values: T) {
+    if (!data) return
     setSaving(true)
     setSaveError(undefined)
     try {
@@ -111,7 +114,7 @@ export default function CareerRecordList<T extends object>({
           <Form<T> layout="vertical" initialValues={editor.values} onFinish={save} disabled={saving}>
             {saveError && <Alert type="error" showIcon message={saveError} style={{ marginBottom: 16 }} />}
             {children}
-            <Button type="primary" htmlType="submit" loading={saving}>保存{label}</Button>
+            <Button type="primary" htmlType="submit" loading={saving} disabled={!data}>保存{label}</Button>
           </Form>
         </Modal>
       )}

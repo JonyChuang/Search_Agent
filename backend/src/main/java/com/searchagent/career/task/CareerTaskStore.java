@@ -56,13 +56,14 @@ class CareerTaskStore {
                 .params(user, id.toString()).query(this::row).optional();
     }
 
-    List<Row> list(String user, String kind, String jobId, long offset) {
+    List<Row> list(String user, String kind, String jobId, String content, long offset) {
         return db.sql("""
                 SELECT * FROM career_task WHERE user_id = :user AND kind = :kind
                     AND (:jobId IS NULL OR job_id = :jobId)
+                    AND (:content IS NULL OR (:content = 'notes') = (COALESCE(request_json->>'$.purpose', '') = 'NOTES'))
                 ORDER BY created_at DESC, id DESC LIMIT 21 OFFSET :offset
                 """).param("user", user).param("kind", kind).param("jobId", jobId)
-                .param("offset", offset).query(this::row).list();
+                .param("content", content).param("offset", offset).query(this::row).list();
     }
 
     List<Row> interviewFeedback(String user, String jobId, List<String> questionIds) {
@@ -74,6 +75,24 @@ class CareerTaskStore {
                 ORDER BY created_at DESC LIMIT 20
                 """).param("user", user).param("jobId", jobId).param("questionIds", questionIds)
                 .query(this::row).list();
+    }
+
+    List<Row> interviewPreparations(String user, String jobId) {
+        return db.sql("""
+                SELECT * FROM career_task WHERE user_id = ? AND job_id = ?
+                    AND kind = 'PREPARATION' AND status = 'SUCCEEDED'
+                    AND JSON_LENGTH(result_json, '$.openQuestions') > 0
+                ORDER BY created_at DESC, id DESC LIMIT 4
+                """).params(user, jobId).query(this::row).list();
+    }
+
+    List<Row> learningQuestions(String user, String jobId) {
+        return db.sql("""
+                SELECT * FROM career_task WHERE user_id = ? AND job_id = ?
+                    AND kind = 'PREPARATION' AND status = 'SUCCEEDED'
+                    AND JSON_LENGTH(result_json, '$.openQuestions') > 0
+                ORDER BY created_at DESC, id DESC
+                """).params(user, jobId).query(this::row).list();
     }
 
     List<String> completedInterviews(String user, String jobId, List<String> questionIds) {
@@ -192,6 +211,16 @@ class CareerTaskStore {
                 UPDATE career_task SET status = 'QUEUED', error_message = NULL, queued_at = CURRENT_TIMESTAMP(6)
                 WHERE user_id = ? AND id = ? AND status = 'FAILED'
                 """).params(user, id.toString()).update();
+    }
+
+    int changeState(String user, UUID id, String current, int generation, String next) {
+        return db.sql("""
+                UPDATE career_task SET status = :next, lease_token = NULL, lease_until = NULL,
+                    queued_at = IF(:next = 'QUEUED', CURRENT_TIMESTAMP(6), queued_at)
+                WHERE user_id = :user AND id = :id AND status = :current AND generation = :generation
+                    AND (:next = 'QUEUED' OR kind <> 'TRAINING' OR training_draft_json IS NULL)
+                """).param("next", next).param("user", user).param("id", id.toString())
+                .param("current", current).param("generation", generation).update();
     }
 
     private void lockScheduler() {

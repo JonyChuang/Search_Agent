@@ -68,6 +68,8 @@ async def build_enabled_tools(
     overrides: dict[str, bool] | None = None,
     stats_holder: dict[str, dict] | None = None,
     kb_ids: list[str] | None = None,
+    *,
+    include_mcp: bool = True,
 ) -> list[BaseTool]:
     """构建用户当前启用的工具列表（内置 + MCP，MCP 为无状态版本，每次调用新建连接）。
 
@@ -82,6 +84,8 @@ async def build_enabled_tools(
     tools = await _build_builtin_tools(
         session, user_id, citations, overrides, stats_holder, kb_ids
     )
+    if not include_mcp:
+        return tools
     # MCP 工具（⑥-B 接入，无状态版本）
     try:
         from app.core.agent.tools.mcp.loader import build_mcp_tools

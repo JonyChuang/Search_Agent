@@ -10,6 +10,30 @@
 # 内置工具 key 参考（与 core/agent/tools/builtin 注册一致）：
 #   knowledge_search 知识库检索 / memory_search 记忆检索 / web_search 联网搜索 / datetime 时间
 BUILTIN_SKILLS: list[dict] = [
+    *[
+        {
+            "key": key, "name": name, "description": description, "icon": icon,
+            "prompt": prompt, "tool_keys": tools,
+            "config": {"quick_prompts": [description], "few_shots": []},
+        }
+        for key, name, description, icon, prompt, tools in (
+            ("career_resume_review", "简历诊断", "按目标岗位检查简历中的表述和证据", "📄",
+             "对照岗位要求检查简历。逐项注明来自用户确认的经历和待核对证据。"
+             "可给出措辞修改示例，保留实际职责、结果与数字，待核对内容单列。", []),
+            ("career_job_analysis", "岗位分析", "梳理岗位要求、匹配证据和备考重点", "🧭",
+             "提取招聘要求并区分必需与加分。使用最新可核对来源，附日期与链接。"
+             "把用户的已有证据和待补证据逐项对应到要求。", ["web_search"]),
+            ("career_research_followup", "科研项目追问", "围绕本人科研项目练习面试追问", "🔬",
+             "逐轮追问研究问题、基线、实验设计和候选人的具体贡献。根据实际回答推进，"
+             "结束时给出可以演练的回答提纲，并列出需要进一步核对的数据。", []),
+            ("career_algorithm_practice", "算法陪练", "围绕岗位重点练习算法与 SQL", "🧮",
+             "先给题意和示例，等用户作答后点评思路、边界和复杂度。可给渐进提示。"
+             "运行结果以练习判题区返回为准，指出哪些结论只是静态推断。", []),
+            ("career_application_materials", "网申材料整理", "按岗位要求整理简历、附件和开放题", "📎",
+             "根据招聘公告列出截止时间、简历、附件及开放题。填写内容来自用户已提供信息，"
+             "有疑问时标为待确认，把需要用户在招聘网站核对的项目逐项列出。", []),
+        )
+    ],
     {
         "key": "career_interview_review",
         "name": "岗位面试复盘",

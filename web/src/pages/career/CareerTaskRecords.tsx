@@ -1,7 +1,8 @@
 import { useCallback } from 'react'
-import { Alert, Button, Card, List, Space, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, List, Space, Tag, Typography } from 'antd'
 import { Link } from 'react-router-dom'
 import { researchApi } from '@/api/research'
+import client from '@/api/client'
 import type { TaskKind } from '@/api/careerWorkflow'
 import { jobPath } from './paths'
 import TaskHistory from './TaskHistory'
@@ -9,11 +10,32 @@ import { useCareerQuery } from './useCareerQuery'
 
 const taskTypes: { kind: TaskKind; title: string }[] = [
   { kind: 'TRAINING', title: '备考计划' },
-  { kind: 'INTERVIEW', title: '模拟面试' },
+  { kind: 'INTERVIEW', title: '开放题练习' },
   { kind: 'REVIEW', title: '复习建议' },
   { kind: 'PREPARATION', title: '岗位模拟题' },
   { kind: 'DISCOVERY', title: '联网面经' },
 ]
+
+type Metric = { kind: string; status: string; taskCount: number; recordedSteps: number; stepMilliseconds: number;
+  measuredInputs: number; inputTokens: number; outputTokens: number }
+
+function TaskMetrics({ jobId }: { jobId?: string }) {
+  const load = useCallback(async (signal: AbortSignal) => (await client.get<unknown, { data: Metric[] }>(
+    '/career/task-metrics', { params: { jobId }, signal })).data, [jobId])
+  const query = useCareerQuery(load)
+  if (query.error) return <Alert type="error" message={query.error} action={<Button onClick={query.retry}>重试</Button>} />
+  const items = query.data ?? []
+  const sum = (key: 'taskCount' | 'recordedSteps' | 'inputTokens' | 'outputTokens' | 'measuredInputs') =>
+    items.reduce((total, item) => total + item[key], 0)
+  const stateCount = (state: string) => items.filter((item) => item.status === state).reduce((total, item) => total + item.taskCount, 0)
+  return query.data ? <Space wrap>
+    <Tag>共 {sum('taskCount')} 项</Tag><Tag color="success">完成 {stateCount('SUCCEEDED')}</Tag>
+    <Tag color="error">失败 {stateCount('FAILED')}</Tag><Tag>取消 {stateCount('CANCELLED')}</Tag>
+    <Tag>记录 {sum('recordedSteps')} 个执行步骤</Tag>
+    {!!sum('measuredInputs') && <Tag>已计量 Token · 输入 {sum('inputTokens')} / 输出 {sum('outputTokens')}</Tag>}
+    <Button size="small" onClick={query.retry}>刷新</Button>
+  </Space> : <Typography.Text type="secondary">正在读取运行统计</Typography.Text>
+}
 
 function CompanyResearchRecords({ jobId }: { jobId: string }) {
   const load = useCallback(async () => (await researchApi.list(1, 10, jobId)).data.items, [jobId])
@@ -40,6 +62,7 @@ export default function CareerTaskRecords({ jobId, kind }: { jobId?: string; kin
   return (
     <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
       {jobId && <CompanyResearchRecords jobId={jobId} />}
+      <Collapse size="small" items={[{ key: 'metrics', label: '最近 30 天的运行统计', children: <TaskMetrics key={jobId} jobId={jobId} /> }]} />
       <Space wrap aria-label="备考任务类型">
         {taskTypes.map(({ kind, title }) => kind === selected.kind
           ? <Typography.Text strong key={kind}>{title}</Typography.Text>

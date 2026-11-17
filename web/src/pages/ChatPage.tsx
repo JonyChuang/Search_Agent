@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Button,
   Drawer,
@@ -36,6 +36,7 @@ import {
   type ChatMessage,
   type ToolCall,
   type ToolRunStatus,
+  type CareerAction,
 } from '@/api/chat'
 import { favoriteApi } from '@/api/favorites'
 
@@ -59,9 +60,12 @@ import { agentConfigApi } from '@/api/agentConfig'
 import { authApi } from '@/api/auth'
 import { useSkillStore } from '@/stores/skillStore'
 import { CurrentJobSelect, useCurrentJob } from './career/CurrentJob'
+import { withJobContext } from './career/jobContext'
 
 export default function ChatPage() {
   const { job } = useCurrentJob()
+  const location = useLocation()
+  const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const [conversations, setConversations] = useState<Conversation[]>([])
   // 折叠的日期分组（key 集合）；默认仅展开「今天」，其余折叠
@@ -119,6 +123,7 @@ export default function ChatPage() {
   const groupsInited = useRef(false)
   // 发送流 / 续传订阅的中断控制器：组件卸载或切会话时断开（后台生成不受影响照常落库）
   const sendAbortRef = useRef<AbortController | null>(null)
+  const careerRequestRef = useRef<{ jobId: string; text: string; id: string } | null>(null)
   const resumeAbortRef = useRef<AbortController | null>(null)
 
   const convGroups = groupConversationsByDate(conversations)
@@ -677,15 +682,17 @@ export default function ChatPage() {
     }
   }
 
-  const onSend = async (overrideText?: string) => {
+  const onSend = async (overrideText?: string, careerAction?: CareerAction) => {
     const text = (overrideText ?? input).trim()
     if (!text || sending) return
     setSending(true)
-    setInput('')
-    const imgs = pendingImages
-    const files = pendingFiles
-    setPendingImages([])
-    setPendingFiles([])
+    const imgs = careerAction ? [] : pendingImages
+    const files = careerAction ? [] : pendingFiles
+    if (!careerAction) {
+      setInput('')
+      setPendingImages([])
+      setPendingFiles([])
+    }
 
     // 先插入用户消息 + 占位的 AI 消息
     const now = new Date().toISOString()
@@ -707,6 +714,13 @@ export default function ChatPage() {
     }
     setMessages((prev) => [...prev, userMsg, aiMsg])
 
+    const failSend = (message: string) => {
+      settleRunningToolRuns(aiMsg.id, 'error')
+      setMessages((prev) => prev.map((item) => item.id === aiMsg.id
+        ? { ...item, content: '⚠️ ' + message, streaming: false } : item))
+      setSending(false)
+    }
+
     let convId = activeId
     // 新发送前断开可能存在的续传订阅，避免与本次发送流重复渲染
     resumeAbortRef.current?.abort()
@@ -714,6 +728,12 @@ export default function ChatPage() {
     sendAbortRef.current?.abort()
     const controller = new AbortController()
     sendAbortRef.current = controller
+    const jobId = job?.id
+    const previous = careerRequestRef.current
+    const careerRequest = jobId ? previous?.jobId === jobId && previous.text === text
+      ? previous : { jobId, text, id: crypto.randomUUID() } : null
+    careerRequestRef.current = careerRequest
+    let careerToolFailed = false
     await streamChat(
       {
         conversationId: convId,
@@ -723,6 +743,9 @@ export default function ChatPage() {
         imageKeys: imgs.map((i) => i.key),
         attachments: files,
         enableWebSearch: webSearch,
+        careerJobId: careerRequest?.jobId,
+        careerPlanRequestId: careerRequest?.id,
+        careerAction,
       },
       {
         onMeta: (d) => {
@@ -745,7 +768,10 @@ export default function ChatPage() {
           )
         },
         onToolStart: (tc) => startToolRun(aiMsg.id, tc),
-        onToolResult: (tc) => finishToolRun(aiMsg.id, tc),
+        onToolResult: (tc) => {
+          if (careerAction || tc.tool === 'create_career_training_plan') careerToolFailed = tc.status === 'error'
+          finishToolRun(aiMsg.id, tc)
+        },
         onCitation: (cites) => {
           setMessages((prev) =>
             prev.map((m) => (m.id === aiMsg.id ? { ...m, citations: cites } : m)),
@@ -760,6 +786,7 @@ export default function ChatPage() {
           )
         },
         onDone: (d) => {
+          if (!careerToolFailed && careerRequestRef.current === careerRequest) careerRequestRef.current = null
           settleRunningToolRuns(aiMsg.id, 'success')
           setMessages((prev) =>
             prev.map((m) =>
@@ -778,24 +805,25 @@ export default function ChatPage() {
           setSending(false)
           loadConversations()
         },
-        onError: (msg) => {
-          settleRunningToolRuns(aiMsg.id, 'error')
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === aiMsg.id
-                ? { ...m, content: `⚠️ ${msg}`, streaming: false }
-                : m,
-            ),
-          )
-          setSending(false)
-        },
+        onError: failSend,
       },
       controller.signal,
     ).catch((e: unknown) => {
       // 中断（切页面/重发）属正常：后台生成不受影响，静默吞掉
-      if ((e as Error)?.name !== 'AbortError') throw e
+      if ((e as Error)?.name !== 'AbortError') failSend(e instanceof Error ? e.message : '发送失败，请重试')
     })
   }
+
+  const careerPrompt = location.state?.careerPrompt
+  useEffect(() => {
+    if (typeof careerPrompt !== 'string' || !careerPrompt.trim()) return
+    const timer = window.setTimeout(() => {
+      navigate('/chat', { replace: true, state: null })
+      void onSend(careerPrompt)
+    }, 0)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [careerPrompt, location.key, navigate])
 
   // 快捷提问/建议词：填进输入框并聚焦（不直接发送），
   // 因为很多快捷语是「待补全的开头」（如「翻译这段话」），直接发会漏掉正文。
@@ -1047,11 +1075,23 @@ export default function ChatPage() {
               )}
               {job && (
                 <button className="chat-quick-prompt" disabled={sending} onClick={() => {
-                  const context = [`目标岗位：${job.company} · ${job.title}`, `岗位描述：${job.description}`]
-                  if (job.skills) context.push(`已确认技能：${job.skills}`)
-                  fillInput([...context, input || '请帮我梳理这个岗位的面试准备重点。'].join('\n'))
+                  fillInput(withJobContext(job, input || '请帮我梳理这个岗位的面试准备重点。'))
                 }}>引用当前岗位</button>
               )}
+              {job && <button type="button" className="chat-quick-prompt" disabled={sending}
+                onClick={() => void onSend('为当前岗位创建备考计划', 'CREATE_TRAINING_PLAN')}>
+                创建备考计划
+              </button>}
+              {job && <Popover trigger="click" content={<Space direction="vertical" align="start">
+                <Button type="text" disabled={sending} onClick={() => void onSend('为当前岗位创建文字模拟面试', 'CREATE_INTERVIEW')}>
+                  创建文字模拟面试</Button>
+                <Button type="text" disabled={sending} onClick={() => void onSend('为当前岗位准备网申草稿', 'CREATE_APPLICATION')}>
+                  准备网申草稿</Button>
+                <Button type="text" disabled={sending} onClick={() => void onSend('用已确认的经历生成岗位简历草稿', 'CREATE_RESUME')}>
+                  用已确认经历生成简历草稿</Button>
+              </Space>}>
+                <button type="button" className="chat-quick-prompt" disabled={sending}>岗位操作</button>
+              </Popover>}
               {/* 快捷开场提问：填进输入框待补充，不直接发送 */}
               {activeSkill?.config?.quick_prompts?.map((qp, i) => (
                 <button

@@ -34,18 +34,23 @@ import org.springframework.web.client.RestClientResponseException;
 class CareerTaskDispatch {
     private static final Logger log = LoggerFactory.getLogger(CareerTaskDispatch.class);
     private final CareerTaskStore store;
+    private final CareerInterviewStore interviewStore;
+    private final CareerInterviewSessions interviews;
     private final RestClient client;
     private final String token;
     private final ObjectMapper json;
     private final Validator validator;
 
-    CareerTaskDispatch(CareerTaskStore store, RestClient.Builder builder, ObjectMapper json, Validator validator,
+    CareerTaskDispatch(CareerTaskStore store, CareerInterviewStore interviewStore, CareerInterviewSessions interviews,
+            RestClient.Builder builder, ObjectMapper json, Validator validator,
             @Value("${career.agent.base-url}") String baseUrl, @Value("${career.agent.internal-token}") String token) {
         var factory = new JdkClientHttpRequestFactory(
                 HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
                         .connectTimeout(Duration.ofSeconds(3)).build());
         factory.setReadTimeout(Duration.ofSeconds(100));
         this.store = store;
+        this.interviewStore = interviewStore;
+        this.interviews = interviews;
         this.client = builder.baseUrl(baseUrl).requestFactory(factory).build();
         this.token = token;
         this.json = json;
@@ -60,6 +65,11 @@ class CareerTaskDispatch {
     @Scheduled(fixedDelay = 1000, initialDelay = 500)
     void dispatchSecond() {
         dispatch();
+    }
+
+    @Scheduled(fixedDelay = 10000)
+    void recoverInterviews() {
+        interviewStore.completedPending().forEach(interviews::recover);
     }
 
     private void run(CareerTaskStore.Row row) {
@@ -85,12 +95,18 @@ class CareerTaskDispatch {
                     .retrieve().body(JsonNode.class);
             if (!training) {
                 Object evaluation = switch (row.kind()) {
-                    case "PREPARATION" -> json.treeToValue(result, Preparation.class);
+                    case "PREPARATION" -> "NOTES".equals(row.context().path("purpose").asText())
+                            ? json.treeToValue(result, Notes.class) : json.treeToValue(result, Preparation.class);
                     case "DISCOVERY" -> json.treeToValue(result, Discovery.class);
+                    case "INTERVIEW_TURN" -> json.treeToValue(result, CareerInterviewSessions.Evaluation.class);
                     default -> json.treeToValue(result, Evaluation.class);
                 };
                 if (evaluation == null || !validator.validate(evaluation).isEmpty()) {
                     throw new IllegalArgumentException("Invalid evaluation");
+                }
+                if (evaluation instanceof Notes notes && notes.notes().stream().anyMatch(note ->
+                        note.reference() > row.context().path("documentIds").size())) {
+                    throw new IllegalArgumentException("Invalid document reference");
                 }
                 if (evaluation instanceof Discovery discovery) {
                     result = json.valueToTree(Map.of("sources", discovery.sources().stream()
@@ -115,7 +131,11 @@ class CareerTaskDispatch {
                 errorMessage = "Agent 未生成训练计划";
             }
         }
-        store.finish(row, result, errorMessage);
+        if ("INTERVIEW_TURN".equals(row.kind())) {
+            interviews.finishTask(row, result, errorMessage);
+        } else {
+            store.finish(row, result, errorMessage);
+        }
     }
 
     private static String failure(Exception error) {
@@ -142,7 +162,13 @@ class CareerTaskDispatch {
 
     private record OpenQuestion(
             @NotBlank @Size(max = 80) String topic, @NotBlank @Size(max = 1000) String prompt,
-            @NotNull @Size(min = 1, max = 5) List<@NotBlank @Size(max = 500) String> rubric) {}
+            @NotNull @Size(min = 1, max = 5) List<@NotBlank @Size(max = 500) String> rubric,
+            @Size(max = 2000) String referenceAnswer) {}
+
+    private record Notes(@NotNull @Size(max = 5) List<@NotNull @Valid ExtractedNote> notes) {}
+
+    private record ExtractedNote(@NotBlank @Size(max = 200) String title, @NotBlank @Size(max = 1500) String summary,
+            @jakarta.validation.constraints.Min(1) @jakarta.validation.constraints.Max(3) int reference) {}
 
     private record Discovery(@NotNull @Size(max = 10) List<@NotNull @Valid Source> sources) {}
 

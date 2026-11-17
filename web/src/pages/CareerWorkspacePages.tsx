@@ -35,8 +35,8 @@ export function CareerTasksPage() {
   return (
     <Space direction="vertical" size="middle" style={{ display: 'flex', maxWidth: 1100, marginInline: 'auto' }}>
       <div>
-        <Title level={2} style={{ marginBottom: 6 }}>任务记录</Title>
-        {job && <Link to={jobPath(job.id, 'tasks')}>只看当前岗位的任务</Link>}
+        <Title level={2} style={{ marginBottom: 6 }}>任务中心</Title>
+        {job && <Link to={jobPath(job.id, 'tasks')}>查看本岗位任务</Link>}
       </div>
       <Tabs activeKey={tab} destroyOnHidden onChange={(key) => setParams({ tab: key })} items={[
         { key: 'tasks', label: '备考任务', children: <Card>

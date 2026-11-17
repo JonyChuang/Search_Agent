@@ -57,7 +57,7 @@ public class PracticeService {
 
     public record Recommendations(List<InterviewNote> notes, List<Question> questions) {}
 
-    Question question(String id, Integer version) {
+    public Question question(String id, Integer version) {
         var question = mapper.question(id, version);
         if (question == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "题目不存在");
@@ -83,6 +83,10 @@ public class PracticeService {
     }
 
     public record QuestionVersion(String id, int version) {}
+
+    public java.util.Optional<Attempt> attempt(String user, UUID requestId) {
+        return java.util.Optional.ofNullable(mapper.attempt(user, requestId.toString()));
+    }
 
     public record InterviewQuestion(String id, int version, int gradingVersion, String role,
             String prompt, String referenceAnswer, String explanation, String sourceUrl) {

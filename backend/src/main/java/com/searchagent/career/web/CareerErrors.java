@@ -5,10 +5,16 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 class CareerErrors {
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    ResponseEntity<CareerResponse<Void>> uploadTooLarge() {
+        return ResponseEntity.status(413).body(new CareerResponse<>(413, "单个附件最多 10 MB，请缩小文件后重试", null));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     ResponseEntity<CareerResponse<Void>> invalidFields(MethodArgumentNotValidException error) {
         var field = error.getBindingResult().getFieldError();

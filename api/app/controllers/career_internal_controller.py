@@ -1,5 +1,6 @@
 """Java 到 Agent 的内部 HTTP 接口。"""
 import logging
+import uuid
 from secrets import compare_digest
 from typing import Annotated, Literal
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 
 from app.config import settings
 from app.core.exceptions import BizError
+from app.db.postgres import SessionLocal
 from app.services.career_context import CareerContextTooLarge, CareerSourceUnavailable
 from app.services.career_task_service import (
     CareerRun,
@@ -19,6 +21,7 @@ from app.services.career_task_service import (
     MissingCareerTools,
     execute,
 )
+from app.services.notify_service import NotifyService
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,19 @@ def require_career_service(
 
 class AgentHealth(BaseModel):
     status: Literal["UP"] = "UP"
+
+
+class ReminderNotification(BaseModel):
+    user_id: uuid.UUID
+    type: Literal["REVIEW", "INTERVIEW", "APPLICATION"]
+
+
+@router.post("/reminder-notifications", dependencies=[Depends(require_career_service)])
+async def remind(body: ReminderNotification) -> dict:
+    title = {"REVIEW": "复习提醒", "INTERVIEW": "面试提醒", "APPLICATION": "投递截止提醒"}[body.type]
+    async with SessionLocal() as session:
+        delivered = await NotifyService(session).push_to_user(body.user_id, title, "你的求职提醒已到时间，请打开计划与提醒查看。")
+    return {"delivered": delivered}
 
 
 @router.get("/health", dependencies=[Depends(require_career_service)])

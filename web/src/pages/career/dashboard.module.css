@@ -1,0 +1,56 @@
+.page {
+  --ink: #181b31;
+  --muted: #626a82;
+  --line: #e2e5ef;
+  --accent: #5042c5;
+  --accent-ink: #4636b6;
+  color: var(--ink);
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  max-width: 1500px;
+  margin-inline: auto;
+}
+.page :is(h1, h2, h3, p) { margin: 0; }
+.page :is(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid #6355cb;
+  outline-offset: 2px;
+}
+.page a { text-decoration: none; }
+.pageHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-bottom: 4px;
+}
+.pageHead h1 {
+  color: var(--ink);
+  font-size: clamp(26px, 3vw, 33px);
+  line-height: 1.3;
+  font-weight: 750;
+  letter-spacing: -.035em;
+}
+.pageHead p { margin-top: 6px; color: var(--muted); font-size: 13px; }
+.button, .primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 5px 11px;
+  border: 1px solid #dfe2ee;
+  border-radius: 8px;
+  color: #343950;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.button:hover { color: var(--accent-ink); border-color: #c6bdec; background: #fbfaff; }
+.primary { border-color: var(--accent); background: var(--accent); color: #fff; box-shadow: 0 2px 5px #5844cb24; }
+.primary:hover { border-color: #4437ae; background: #4437ae; color: #fff; }
+.primary:disabled { cursor: default; opacity: .6; }

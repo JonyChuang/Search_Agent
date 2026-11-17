@@ -48,6 +48,9 @@ export const TOOL_META: Record<string, { icon: string; label: string }> = {
   knowledge_search: { icon: '🔍', label: '知识库' },
   memory_search: { icon: '🧠', label: '记忆' },
   web_search: { icon: '🌐', label: '联网' },
+  read_career_job: { icon: '📋', label: '读取岗位' },
+  read_career_training_progress: { icon: '📊', label: '查看备考进度' },
+  create_career_training_plan: { icon: '📅', label: '创建备考计划' },
 }
 
 // 真人模式多气泡分隔符：模型在断句处单独输出 [[next]]，前端据此把一条回复拆成多个气泡。

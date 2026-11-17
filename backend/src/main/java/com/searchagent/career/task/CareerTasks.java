@@ -7,6 +7,7 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -34,15 +35,17 @@ import com.searchagent.career.profile.ExperienceService;
 @Service
 class CareerTasks {
     private final CareerTaskStore store;
+    private final CareerInterviewStore interviews;
     private final JobService jobs;
     private final ExperienceService experiences;
     private final PracticeService practice;
     private final ObjectMapper json;
     private final JobMemory memory;
 
-    CareerTasks(CareerTaskStore store, JobService jobs, ExperienceService experiences,
+    CareerTasks(CareerTaskStore store, CareerInterviewStore interviews, JobService jobs, ExperienceService experiences,
             PracticeService practice, ObjectMapper json, JobMemory memory) {
         this.store = store;
+        this.interviews = interviews;
         this.jobs = jobs;
         this.experiences = experiences;
         this.practice = practice;
@@ -60,13 +63,36 @@ class CareerTasks {
             var jobSnapshot = jobContext(job);
             context.set("job", json.valueToTree(jobSnapshot));
             context.set("experiences", json.valueToTree(facts));
+            if (input.previousPlanId() != null || input.reviewTaskId() != null) {
+                if (input.previousPlanId() == null || input.reviewTaskId() == null) {
+                    throw new ResponseStatusException(BAD_REQUEST, "请选择原计划和复盘记录");
+                }
+                var previous = owned(user, input.previousPlanId());
+                var review = owned(user, input.reviewTaskId());
+                if (!"TRAINING".equals(previous.kind()) || !"REVIEW".equals(review.kind())
+                        || !"SUCCEEDED".equals(previous.status()) || !"SUCCEEDED".equals(review.status())
+                        || !job.id().equals(previous.jobId()) || !job.id().equals(review.jobId())
+                        || !previous.id().equals(review.request().path("planId").asText())) {
+                    throw new ResponseStatusException(CONFLICT, "请选择本岗位原计划对应的已完成复盘");
+                }
+                context.set("plan", previous.result());
+                context.put("revisionReview", excerpt(review.result().path("feedback").asText(), 2000));
+            }
+            var interviewFeedback = recentInterviewFeedback(user, job.id());
+            if (!interviewFeedback.isEmpty()) context.set("interviewFeedback", json.valueToTree(interviewFeedback));
             if (input.role() != null) {
                 context.put("role", input.role());
             }
-            if (input.preparationId() != null) {
-                preparation(user, job.id(), input.preparationId());
+            var preparationId = input.preparationId();
+            if (preparationId == null && input.role() == null && input.preferredQuestion() == null) {
+                preparationId = store.interviewPreparations(user, job.id()).stream().findFirst()
+                        .map(item -> UUID.fromString(item.id())).orElse(null);
+            }
+            if (preparationId != null) {
+                preparation(user, job.id(), preparationId);
+                context.put("preparationId", preparationId.toString());
                 if (input.preferredQuestion() != null) {
-                    if (!input.preferredQuestion().matches(input.preparationId() + "-[0-4]")) {
+                    if (!input.preferredQuestion().matches(preparationId + "-[0-4]")) {
                         throw new ResponseStatusException(BAD_REQUEST, "指定题目不属于所选模拟题批次");
                     }
                     openQuestion(user, job.id(), input.preferredQuestion(), 1);
@@ -86,7 +112,12 @@ class CareerTasks {
         return enqueue(user, input.requestId(), "PREPARATION", input, () -> {
             var job = jobs.find(user, input.jobId().toString());
             var context = taskContext(user, job.id(), input.documentIds(), input.skillId());
+            if ("NOTES".equals(input.purpose()) && !context.has("documentIds")) {
+                throw new ResponseStatusException(BAD_REQUEST, "请先选择用于整理面经的资料");
+            }
             context.set("job", json.valueToTree(jobContext(job)));
+            if (input.purpose() != null) context.put("purpose", input.purpose());
+            if (input.topic() != null && !input.topic().isBlank()) context.put("topic", input.topic().strip());
             return new Snapshot(job.id(), context);
         });
     }
@@ -119,13 +150,15 @@ class CareerTasks {
                 feedback.add(Map.of("question", answer.context().path("question").path("prompt"),
                         "answer", answer.context().path("answer"), "feedback", answer.result().path("feedback")));
             }
-            if (feedback.isEmpty()) {
-                throw new ResponseStatusException(CONFLICT, "请先完成计划中的至少一道练习");
+            var interviewFeedback = recentInterviewFeedback(user, plan.jobId());
+            if (feedback.isEmpty() && interviewFeedback.isEmpty()) {
+                throw new ResponseStatusException(CONFLICT, "请先完成计划练习或本岗位的模拟面试");
             }
             var context = json.createObjectNode();
             context.set("job", plan.context().path("job"));
             context.set("plan", plan.result());
             context.set("feedback", json.valueToTree(feedback));
+            if (!interviewFeedback.isEmpty()) context.set("interviewFeedback", json.valueToTree(interviewFeedback));
             return new Snapshot(plan.jobId(), context);
         });
     }
@@ -136,19 +169,36 @@ class CareerTasks {
             throw new ResponseStatusException(CONFLICT, "训练计划尚未生成");
         }
         var objective = new ArrayList<PracticeService.QuestionVersion>();
-        var open = new ArrayList<String>();
+        var open = new ArrayList<PracticeService.QuestionVersion>();
         for (var question : plan.result().path("questions")) {
-            String questionId = question.path("id").asText();
+            var ref = new PracticeService.QuestionVersion(question.path("id").asText(), question.path("version").asInt());
             if ("OPEN".equals(question.path("kind").asText())) {
-                open.add(questionId);
+                open.add(ref);
             } else {
-                objective.add(new PracticeService.QuestionVersion(questionId, question.path("version").asInt()));
+                objective.add(ref);
             }
         }
-        var completed = new ArrayList<>(practice.completedQuestions(user, objective, plan.jobId(), plan.context().has("role")));
-        store.completedInterviews(user, plan.jobId(), open).forEach(
+        var completed = new LinkedHashSet<>(practice.completedQuestions(user, objective, plan.jobId(), plan.context().has("role")));
+        store.completedInterviews(user, plan.jobId(), open.stream().filter(ref -> ref.version() == 1)
+                .map(PracticeService.QuestionVersion::id).toList()).forEach(
                 question -> completed.add(new PracticeService.QuestionVersion(question, 1)));
-        return completed;
+        completed.addAll(interviews.completedQuestions(user, plan.jobId(), open));
+        return List.copyOf(completed);
+    }
+
+    private List<Map<String, Object>> recentInterviewFeedback(String user, String jobId) {
+        return interviews.recentCompleted(user, jobId).stream().flatMap(session -> session.rounds().stream()
+                .filter(round -> round.main() != null && round.main().evaluation() != null)
+                .map(round -> {
+                    var question = round.question();
+                    var evaluation = round.main().evaluation();
+                    return Map.<String, Object>of("sessionId", session.id(), "topic", question.topic(),
+                            "question", question.prompt(), "questionId", question.id(), "version", question.version(),
+                            "answer", excerpt(round.main().answer(), 600), "feedback", evaluation.feedback(),
+                            "scores", List.of(evaluation.accuracy(), evaluation.evidence(), evaluation.structure()),
+                            "followUpFeedback", round.extra() != null && round.extra().evaluation() != null
+                                    ? round.extra().evaluation().feedback() : "");
+                })).limit(8).toList();
     }
 
     Task interview(String user, Interview input) {
@@ -165,7 +215,10 @@ class CareerTasks {
         });
     }
 
-    private JsonNode openQuestion(String user, String jobId, String id, int version) {
+    JsonNode openQuestion(String user, String jobId, String id, int version) {
+        if (!id.matches("[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-4]")) {
+            throw new ResponseStatusException(NOT_FOUND, "岗位模拟题不存在");
+        }
         var task = preparation(user, jobId, UUID.fromString(id.substring(0, 36)));
         var question = task.result().path("openQuestions").path(id.charAt(37) - '0');
         if (version != 1 || !(question instanceof ObjectNode openQuestion)) {
@@ -185,11 +238,11 @@ class CareerTasks {
     }
 
     Task get(String user, UUID id) {
-        return view(owned(user, id));
+        return view(publicTask(user, id));
     }
 
     List<CareerTaskStore.Event> events(String user, UUID id) {
-        owned(user, id);
+        publicTask(user, id);
         return store.events(id);
     }
 
@@ -223,18 +276,42 @@ class CareerTasks {
     }
 
     Task retry(String user, UUID id) {
-        var task = owned(user, id);
+        var task = publicTask(user, id);
         if ("FAILED".equals(task.status())) {
             store.retry(user, id);
         }
         return get(user, id);
     }
 
-    TaskPage list(String user, String kind, UUID jobId, int page) {
+    Task changeState(String user, UUID id, TaskTransition input) {
+        var task = publicTask(user, id);
+        String target = switch (input.action()) {
+            case PAUSE -> "WAITING_USER";
+            case RESUME -> "QUEUED";
+            case CANCEL -> "CANCELLED";
+        };
+        if (task.status().equals(target) && task.generation() == input.generation()) return view(task);
+        boolean allowed = switch (input.action()) {
+            case PAUSE -> List.of("QUEUED", "RUNNING").contains(task.status())
+                    && !("TRAINING".equals(task.kind()) && task.trainingDraft() != null);
+            case RESUME -> "WAITING_USER".equals(task.status());
+            case CANCEL -> List.of("QUEUED", "RUNNING", "WAITING_USER", "FAILED").contains(task.status())
+                    && !("TRAINING".equals(task.kind()) && task.trainingDraft() != null);
+        };
+        if (!allowed || store.changeState(user, id, input.status(), input.generation(), target) != 1) {
+            throw new ResponseStatusException(CONFLICT, "任务状态已变化，请刷新后重试");
+        }
+        return get(user, id);
+    }
+
+    TaskPage list(String user, String kind, UUID jobId, String content, int page) {
         if (!List.of("TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY").contains(kind) || page < 1) {
             throw new ResponseStatusException(BAD_REQUEST, "任务类型或页码无效");
         }
-        var rows = store.list(user, kind, jobId == null ? null : jobId.toString(), (page - 1L) * 20);
+        if (content != null && (!"PREPARATION".equals(kind) || !List.of("notes", "questions").contains(content))) {
+            throw new ResponseStatusException(BAD_REQUEST, "备考内容类型无效");
+        }
+        var rows = store.list(user, kind, jobId == null ? null : jobId.toString(), content, (page - 1L) * 20);
         return new TaskPage(rows.stream().limit(20).map(this::view).toList(), rows.size() > 20);
     }
 
@@ -249,7 +326,7 @@ class CareerTasks {
                         job.path("jd").asText(), job.path("skills").asText()).questions()
                 : practice.questions(role);
         var catalog = json.createArrayNode();
-        var preparationId = row.request().path("preparationId").asText(null);
+        var preparationId = row.context().path("preparationId").asText(row.request().path("preparationId").asText(null));
         if (preparationId != null) {
             var saved = preparation(row.user(), row.jobId(), UUID.fromString(preparationId));
             var questions = saved.result().path("openQuestions");
@@ -311,19 +388,39 @@ class CareerTasks {
         return store.owned(user, id).orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "任务不存在"));
     }
 
+    private CareerTaskStore.Row publicTask(String user, UUID id) {
+        var row = owned(user, id);
+        if ("INTERVIEW_TURN".equals(row.kind())) throw new ResponseStatusException(NOT_FOUND, "任务不存在");
+        return row;
+    }
+
     private Task view(CareerTaskStore.Row row) {
         var question = row.context().path("question");
         JsonNode interview = null;
         if ("INTERVIEW".equals(row.kind())) {
-            interview = json.createObjectNode().put("prompt", question.path("prompt").asText())
+            var detail = json.createObjectNode().put("prompt", question.path("prompt").asText())
                     .put("gradingVersion", question.path("gradingVersion").asInt())
                     .put("sourceUrl", question.path("sourceUrl").asText())
                     .put("answer", row.context().path("answer").asText());
+            if ("SUCCEEDED".equals(row.status()) && "OPEN".equals(question.path("kind").asText())) {
+                detail.set("rubric", question.path("rubric"));
+                if (question.hasNonNull("referenceAnswer")) detail.set("referenceAnswer", question.path("referenceAnswer"));
+            }
+            interview = detail;
         }
         var job = row.context().path("job");
         var prepared = row.agentContext();
+        JsonNode result = row.result();
+        if (result != null && result.has("openQuestions")) {
+            result = result.deepCopy();
+            for (var item : result.path("openQuestions")) {
+                if (item instanceof ObjectNode questionResult) {
+                    questionResult.remove(List.of("rubric", "referenceAnswer"));
+                }
+            }
+        }
         return new Task(row.id(), row.kind(), row.status(), row.request(), job.path("label").asText(), interview,
-                row.result(), row.error(), row.generation(), trainingStep(row),
+                result, row.error(), row.generation(), trainingStep(row),
                 prepared == null ? null : prepared.get("references"), row.createdAt(), row.updatedAt());
     }
 
@@ -362,14 +459,18 @@ class CareerTasks {
     record JobRequest(@NotNull UUID requestId, @NotNull UUID jobId) {}
     record PreparationRequest(@NotNull UUID requestId, @NotNull UUID jobId,
             @JsonInclude(JsonInclude.Include.NON_EMPTY) @Size(max = 3) List<@NotNull UUID> documentIds,
-            @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillId) {}
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Pattern(regexp = "NOTES") String purpose,
+            @JsonInclude(JsonInclude.Include.NON_NULL) @Size(max = 80) String topic) {}
     record Training(@NotNull UUID requestId, @NotNull UUID jobId,
             @Pattern(regexp = "backend|algorithm|llm") String role,
             @JsonInclude(JsonInclude.Include.NON_NULL) UUID preparationId,
             @JsonInclude(JsonInclude.Include.NON_NULL)
             @Pattern(regexp = "[a-z0-9-]{1,64}") String preferredQuestion,
             @JsonInclude(JsonInclude.Include.NON_EMPTY) @Size(max = 3) List<@NotNull UUID> documentIds,
-            @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillId) {}
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID skillId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID previousPlanId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) UUID reviewTaskId) {}
     record Review(@NotNull UUID requestId, @NotNull UUID planId) {}
     record Interview(@NotNull UUID requestId, @NotNull UUID jobId,
             @NotNull @Pattern(regexp = "[a-z0-9-]{1,64}") String questionId, @NotNull @Positive Integer questionVersion,
@@ -385,4 +486,7 @@ class CareerTasks {
             JsonNode result, String error, int generation, String trainingStep, JsonNode references,
             Instant createdAt, Instant updatedAt) {}
     record TaskPage(List<Task> items, boolean hasMore) {}
+    enum TaskAction { PAUSE, RESUME, CANCEL }
+    record TaskTransition(@NotNull TaskAction action, @NotBlank String status,
+            @NotNull @jakarta.validation.constraints.PositiveOrZero Integer generation) {}
 }

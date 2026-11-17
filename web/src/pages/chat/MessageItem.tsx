@@ -20,6 +20,7 @@ import { favoriteApi } from '@/api/favorites'
 import { chatApi } from '@/api/chat'
 import { copyText } from '@/utils/clipboard'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
+import { applicationPath, interviewPath, preparationPath, resumeDesignPath } from '../career/paths'
 import type { ChatAvatars, UiMessage } from './types'
 import { formatMsgTime, hasBubbleSep } from './types'
 
@@ -140,6 +141,17 @@ export default function MessageItem({
   // 全局真人模式：AI 回复走「正在输入…→逐条气泡」，不显示助手过程条（正在理解问题…）
   const humanModeActive = !!avatars?.humanMode
   const humanMode = !isUser && humanModeActive
+  const createdPlan = processRuns?.find((run) => run.tool === 'create_career_training_plan' && run.status === 'success')
+  const planId = createdPlan?.stats?.career_plan_id
+  const planJobId = createdPlan?.stats?.career_job_id
+  const artifact = processRuns?.find((run) => run.status === 'success' && run.stats?.career_record_id)?.stats
+  const recordId = artifact?.career_record_id
+  const recordJob = artifact?.career_job_id
+  const recordLink = typeof recordId === 'string' && typeof recordJob === 'string' ? {
+    CREATE_INTERVIEW: interviewPath({ session: recordId, job: recordJob }),
+    CREATE_APPLICATION: applicationPath(recordJob),
+    CREATE_RESUME: resumeDesignPath(recordId, recordJob),
+  }[artifact?.career_action as 'CREATE_INTERVIEW' | 'CREATE_APPLICATION' | 'CREATE_RESUME'] : undefined
   // 真人模式多气泡：AI 消息且内容含分隔符 → 拆成多个微信式气泡逐条展示
   const isHumanMulti = !isUser && !!msg.content && hasBubbleSep(msg.content)
 
@@ -260,6 +272,16 @@ export default function MessageItem({
             )}
           </div>
         )}
+        {typeof planId === 'string' && typeof planJobId === 'string' && (
+          <div style={{ marginTop: 8 }}>
+            <Link className="ant-btn ant-btn-default" to={preparationPath('plan', { job: planJobId, plan: planId })}>
+              <FileTextOutlined aria-hidden /> 打开备考计划任务
+            </Link>
+          </div>
+        )}
+        {recordLink && <div style={{ marginTop: 8 }}>
+          <Link className="ant-btn ant-btn-default" to={recordLink}><FileTextOutlined aria-hidden /> 打开求职记录</Link>
+        </div>}
 
         {/* 用户消息复制按钮 + 时间（右对齐）；真人模式下隐藏整排 */}
         {isUser && msg.content && !humanModeActive && (

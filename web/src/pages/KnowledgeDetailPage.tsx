@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   Button,
+  Dropdown,
   Empty,
   Input,
   Modal,
@@ -268,7 +269,11 @@ function DocTab({ kbId }: { kbId: string }) {
         </div>
       </div>
       <div className="kb-row-actions">
-        <Link to={preparationPath('plan', { document: d.id })}>用于备考</Link>
+        <Dropdown menu={{ items: [
+          { key: 'plan', label: <Link to={preparationPath('plan', { document: d.id })}>用于备考计划</Link> },
+          { key: 'practice', label: <Link to={preparationPath('practice', { prepDocument: d.id })}>用这份资料出题</Link> },
+          { key: 'notes', label: <Link to={preparationPath('library', { source: 'my-notes', prepDocument: d.id })}>整理面经</Link> },
+        ] }} trigger={['click']}><Button type="link" size="small">用于备考</Button></Dropdown>
         <Tooltip title="查看内容">
           <Button
             size="small"

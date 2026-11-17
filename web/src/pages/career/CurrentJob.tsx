@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react'
 import { Alert, Button, Select, Space } from 'antd'
+import { AimOutlined } from '@ant-design/icons'
 import { Link, useSearchParams } from 'react-router-dom'
 import { careerApi, type JobInput } from '@/api/career'
 import { useCareerAction } from './useCareerAction'
@@ -44,30 +45,41 @@ export function useCurrentJob() {
   return context
 }
 
-export function CurrentJobSelect({ maxWidth, inHero = false }: { maxWidth?: number; inHero?: boolean }) {
+export function CurrentJobSelect({ maxWidth, inHero = false, inHeader = false }: {
+  maxWidth?: number; inHero?: boolean; inHeader?: boolean
+}) {
   const { job, jobs, error, loading, saving, select, reload } = useCurrentJob()
   const [params, setParams] = useSearchParams()
 
   function changeJob(value?: string) {
     select(value ?? null, () => {
-      if (!['job', 'question', 'document', 'source'].some((key) => params.has(key))) return
+      if (!['job', 'question', 'document', 'source', 'plan', 'create'].some((key) => params.has(key))) return
       const next = new URLSearchParams(params)
       next.delete('job')
       next.delete('question')
       next.delete('version')
       next.delete('document')
-      if (params.get('tab') === 'plan') next.delete('source')
+      if (params.get('tab') === 'plan') {
+        next.delete('source')
+        next.delete('plan')
+        next.delete('create')
+      }
       setParams(next, { replace: true })
     })
   }
 
+  const field = <Select aria-label="当前目标岗位" placeholder="选择当前目标岗位" allowClear showSearch
+    prefix={inHeader ? <AimOutlined aria-hidden /> : undefined}
+    optionFilterProp="label" value={job?.id} loading={loading || saving} disabled={saving || loading || !!error}
+    style={inHeader ? { width: '100%' } : { width: inHero ? 220 : 250, maxWidth: '72vw' }}
+    size={inHero ? 'small' : 'middle'}
+    options={jobs?.map((item) => ({ value: item.id, label: item.company + ' · ' + item.title }))}
+    onChange={changeJob} />
+  if (inHeader) return field
+
   return (
     <Space wrap style={{ display: 'flex', marginBottom: inHero ? 0 : 16, maxWidth, marginInline: 'auto' }}>
-      <Select aria-label="当前目标岗位" placeholder="选择当前目标岗位" allowClear showSearch
-        optionFilterProp="label" value={job?.id} loading={loading || saving} disabled={saving || loading || !!error}
-        style={{ width: inHero ? 220 : 250, maxWidth: '72vw' }} size={inHero ? 'small' : 'middle'}
-        options={jobs?.map((item) => ({ value: item.id, label: `${item.company} · ${item.title}` }))}
-        onChange={changeJob} />
+      {field}
       {!inHero && <Link to="/career/jobs">{jobs?.length ? '管理岗位' : '新增岗位'}</Link>}
       {error && <Alert type="error" message={error} action={<Button size="small" onClick={reload}>重试</Button>} />}
     </Space>

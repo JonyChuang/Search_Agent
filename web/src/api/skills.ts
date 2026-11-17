@@ -27,6 +27,18 @@ export interface Skill {
   enabled: boolean
   config: SkillConfig
   is_builtin: boolean
+  package?: { id: string; activeVersion: string; versions: { version: string; source: string; commit?: string; tools: string[] }[] } | null
+}
+
+export interface PackagePreview {
+  manifest: { name: string; version: string; tools: string[] }
+  digest: string
+  references: string[]
+  unavailable: string[]
+  prompt: string
+  previousVersion?: string
+  previousPrompt?: string
+  localPromptEdited?: boolean
 }
 
 export interface SkillInput {
@@ -51,6 +63,9 @@ export interface BuiltinSkill {
 }
 
 export const skillApi = {
+  previewPackage: (body: FormData) => client.post<unknown, Wrapped<PackagePreview>>('/skills/packages/preview', body),
+  installPackage: (body: FormData) => client.post<unknown, Wrapped<Skill>>('/skills/packages/install', body),
+  rollback: (id: string, version: string) => client.post<unknown, Wrapped<Skill>>(`/skills/${id}/packages/rollback`, { version }),
   list(signal?: AbortSignal) {
     return client.get<unknown, Wrapped<Skill[]>>('/skills', { signal })
   },

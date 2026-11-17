@@ -1,20 +1,24 @@
-import { Avatar, Badge, Button, Drawer, Dropdown, Input, Layout, Menu, Space, message } from 'antd'
+import { Avatar, Badge, Button, ConfigProvider, Drawer, Dropdown, Input, Layout, Menu, Select, message } from 'antd'
 import {
+  AimOutlined,
   AppstoreOutlined,
   BellOutlined,
   BookOutlined,
   CommentOutlined,
+  CompassOutlined,
   ClockCircleOutlined,
   ClusterOutlined,
   HistoryOutlined,
-  FileTextOutlined,
   FileSearchOutlined,
+  FormOutlined,
+  FundOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MoreOutlined,
   PlusOutlined,
   ReadOutlined,
+  RightOutlined,
   RobotOutlined,
   SearchOutlined,
   SettingOutlined,
@@ -25,17 +29,21 @@ import {
   ToolOutlined,
   UserOutlined,
   UsergroupAddOutlined,
+  UpOutlined,
+  VideoCameraOutlined,
 } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
-import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { Link, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
 import { useChatHeaderStore } from '@/stores/chatHeaderStore'
 import { useGroupHeaderStore } from '@/stores/groupHeaderStore'
 import { agentTaskApi } from '@/api/agentTask'
+import { remindersApi } from '@/api/careerReminders'
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import MusicPlayer from '@/components/MusicPlayer'
 import logo from '@/images/logo.png'
 import { CurrentJobProvider, CurrentJobSelect, useCurrentJob } from '@/pages/career/CurrentJob'
+import styles from './MainLayout.module.css'
 
 const { Sider, Content, Header } = Layout
 
@@ -54,7 +62,6 @@ const menuItems = [
     label: '求职准备',
     children: [
       { key: '/career/jobs', icon: <FileSearchOutlined />, label: '岗位与公司' },
-      { key: '/career/resume', icon: <FileTextOutlined />, label: '简历与经历' },
     ],
   },
   {
@@ -62,14 +69,16 @@ const menuItems = [
     label: '面试备考',
     children: [
       { key: '/career/preparation', icon: <ReadOutlined />, label: '备考中心' },
+      { key: '/career/interviews', icon: <VideoCameraOutlined />, label: '模拟面试' },
     ],
   },
   {
     type: 'group' as const,
     label: '求职进展',
     children: [
-      { key: '/career/apply', label: '网申助手' },
-      { key: '/career/applications', label: '投递看板' },
+      { key: '/career/apply', icon: <FormOutlined />, label: '网申助手' },
+      { key: '/career/applications', icon: <FundOutlined />, label: '投递看板' },
+      { key: '/career/reminders', icon: <FormOutlined />, label: '计划与提醒' },
     ],
   },
   {
@@ -78,7 +87,7 @@ const menuItems = [
     children: [
       { key: '/knowledge', icon: <BookOutlined />, label: '我的资料' },
       { key: '/career/memory', icon: <ClusterOutlined />, label: '求职记忆' },
-      { key: '/career/tasks', icon: <HistoryOutlined />, label: '任务记录' },
+      { key: '/career/tasks', icon: <HistoryOutlined />, label: '任务中心' },
       { key: '/search', icon: <SearchOutlined />, label: '全局搜索' },
       { key: '/favorites', icon: <StarOutlined />, label: '收藏夹' },
       { key: '/agent-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
@@ -97,6 +106,26 @@ const menuItems = [
     ],
   },
 ]
+
+const sidebarTheme = {
+  components: {
+    Menu: {
+      itemBg: 'transparent',
+      itemColor: '#47506a',
+      itemSelectedBg: '#ece9ff',
+      itemSelectedColor: '#4736b6',
+      itemHoverBg: '#f0eff8',
+      itemHoverColor: '#423782',
+      itemHeight: 29,
+      itemMarginInline: 0,
+      itemMarginBlock: 1,
+      groupTitleColor: '#676f85',
+      groupTitleFontSize: 11,
+      subMenuItemBg: 'transparent',
+      fontSize: 13,
+    },
+  },
+}
 
 // 小屏（手机/窄平板）检测：≤768px 走抽屉式侧边栏
 function useIsMobile() {
@@ -120,7 +149,15 @@ export default function MainLayout() {
 function MainLayoutContent() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { job } = useCurrentJob()
+  const { job, jobs } = useCurrentJob()
+  const [params, setParams] = useSearchParams()
+  const boardPage = location.pathname === '/career/applications'
+  const applyPage = location.pathname === '/career/apply'
+  const interviewPage = location.pathname === '/career/interviews'
+  const dashboardPage = boardPage || applyPage || interviewPage || location.pathname === '/'
+  const boardJobId = params.get('job')
+  const scopedJob = boardJobId ?? (applyPage ? job?.id ?? 'general' : '')
+  const workspaceTitle = boardPage ? '投递看板' : applyPage ? '网申助手' : interviewPage ? '模拟面试' : '求职总览'
   const careerPage = location.pathname === '/' || location.pathname.startsWith('/career/')
   const jobWorkspace = location.pathname.startsWith('/career/jobs/')
   const menuKey = jobWorkspace ? '/career/jobs'
@@ -160,6 +197,19 @@ function MainLayoutContent() {
 
   // 定时任务未读红点：轮询 + 路由切换时刷新（离开任务页 mark-seen 后归零）
   const [unreadTasks, setUnreadTasks] = useState(0)
+  const [dueReminders, setDueReminders] = useState(0)
+  useEffect(() => {
+    const controller = new AbortController()
+    const refresh = () => remindersApi.count(controller.signal).then(setDueReminders).catch(() => {})
+    void refresh()
+    const timer = window.setInterval(refresh, 60_000)
+    window.addEventListener('career-reminders-changed', refresh)
+    return () => {
+      controller.abort()
+      window.clearInterval(timer)
+      window.removeEventListener('career-reminders-changed', refresh)
+    }
+  }, [])
   useEffect(() => {
     let alive = true
     const fetchUnread = () => {
@@ -194,30 +244,33 @@ function MainLayoutContent() {
     navigate('/login', { replace: true })
   }
 
+  const accountItems = [
+    { key: 'profile', icon: <UserOutlined />, label: '个人中心', onClick: () => navigate('/profile') },
+    { key: 'comet-workspace', icon: <AppstoreOutlined />, label: 'Comet 工作台', onClick: () => navigate('/workspace') },
+    { type: 'divider' as const },
+    { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: onLogout },
+  ]
+  const accountName = user?.nickname || user?.username || '用户'
+  const account = (mini: boolean, inSidebar: boolean) => (
+    <Dropdown menu={{ items: accountItems }} trigger={['click']} placement={inSidebar ? 'topLeft' : 'bottomRight'}>
+      <button type="button" aria-label="账户菜单" className={inSidebar ? styles.account : styles.headerAccount}
+        data-mini={mini || undefined} data-immersive={immersive || undefined}>
+        {user?.avatar
+          ? <AuthenticatedImage src={user.avatar} alt="" className={styles.avatar} />
+          : <Avatar size={32} className={styles.avatar}>{Array.from(accountName)[0]?.toUpperCase() || <UserOutlined />}</Avatar>}
+        {!mini && <><span className={styles.accountName}>{accountName}</span>{inSidebar && <UpOutlined aria-hidden />}</>}
+      </button>
+    </Dropdown>
+  )
+
   // logo 头部（桌面 Sider 与移动抽屉共用）
   const brand = (mini: boolean) => (
-    <div
-      style={{
-        height: 64,
-        flexShrink: 0,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        paddingInline: mini ? 0 : 20,
-        justifyContent: mini ? 'center' : 'flex-start',
-        color: immersive ? '#fff' : '#171719',
-        overflow: 'hidden',
-      }}
-    >
-      <img
-        src={logo}
-        alt="彗记"
-        style={{ width: 36, height: 36, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }}
-      />
-      {!mini && (
-        <span style={{ fontWeight: 600, fontSize: 19, whiteSpace: 'nowrap' }}>Search Agent</span>
-      )}
-    </div>
+    <Link to="/" className={styles.brand} data-mini={mini || undefined} data-immersive={immersive || undefined}
+      aria-label="Search Agent 求职总览">
+      {immersive ? <img src={logo} alt="" className={styles.brandMark} />
+        : <span className={styles.brandMark}><CompassOutlined aria-hidden /></span>}
+      {!mini && <span><strong>Search Agent</strong>{!immersive && <small>求职工作台</small>}</span>}
+    </Link>
   )
 
   const navMenu = (mini: boolean) => {
@@ -226,22 +279,23 @@ function MainLayoutContent() {
       'children' in group
         ? {
             ...group,
-            children: group.children.map((it) =>
-              it.key === '/agent-tasks' && unreadTasks > 0 && !mini
+            children: group.children.map((it) => {
+              const count = it.key === '/agent-tasks' ? unreadTasks : it.key === '/career/reminders' ? dueReminders : 0
+              return count > 0 && !mini
                 ? {
                     ...it,
                     label: (
-                      <Badge count={unreadTasks} size="small" offset={[10, 0]}>
+                      <Badge count={count} size="small" offset={[10, 0]}>
                         <span>{it.label}</span>
                       </Badge>
                     ),
                   }
-                : it,
-            ),
+                : it
+            }),
           }
         : group,
     )
-    return (
+    const menu = (
       <Menu
         mode="inline"
         theme={immersive ? 'dark' : 'light'}
@@ -253,9 +307,11 @@ function MainLayoutContent() {
         selectedKeys={[menuKey]}
         items={items}
         onClick={({ key }) => navigate(key)}
+        className={!immersive ? styles.nav : undefined}
         style={{ borderInlineEnd: 'none', background: 'transparent' }}
       />
     )
+    return immersive ? menu : <ConfigProvider theme={sidebarTheme}>{menu}</ConfigProvider>
   }
 
   return (
@@ -266,7 +322,7 @@ function MainLayoutContent() {
       {/* 桌面端：常驻可折叠侧边栏 */}
       {!isMobile && (
         <Sider
-          width={236}
+          width={immersive ? 236 : 224}
           collapsible
           collapsed={collapsed}
           trigger={null}
@@ -274,17 +330,18 @@ function MainLayoutContent() {
           style={{
             borderInlineEnd: immersive
               ? '1px solid rgba(255,255,255,0.08)'
-              : '1px solid #f0f0f0',
+              : '1px solid #e5e7f1',
             background: immersive
               ? 'linear-gradient(180deg, #141633 0%, #0c0d18 100%)'
-              : undefined,
+              : '#fafaff',
             transition: 'background 0.4s',
           }}
         >
           {brand(collapsed)}
-          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
+          <div className="app-shell-sider-menu">
             {navMenu(collapsed)}
           </div>
+          {!immersive && account(collapsed, true)}
         </Sider>
       )}
 
@@ -294,19 +351,20 @@ function MainLayoutContent() {
           placement="left"
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
-          width={236}
+          width={224}
           closable={false}
           styles={{
             body: { padding: 0, display: 'flex', flexDirection: 'column', height: '100%' },
             content: immersive
               ? { background: 'linear-gradient(180deg, #141633 0%, #0c0d18 100%)' }
-              : undefined,
+              : { background: '#fafaff' },
           }}
         >
           {brand(false)}
-          <div className="app-shell-sider-menu" style={{ paddingBottom: 12 }}>
+          <div className="app-shell-sider-menu">
             {navMenu(false)}
           </div>
+          {!immersive && account(false, true)}
         </Drawer>
       )}
 
@@ -317,7 +375,47 @@ function MainLayoutContent() {
           transition: 'background 0.4s',
         }}
       >
-        <Header
+        {dashboardPage ? <Header className={styles.dashboardHeader}>
+          <div className={styles.headerStart}>
+            <button type="button" className={styles.navToggle} aria-label="菜单" aria-expanded={isMobile ? drawerOpen : !collapsed}
+              onClick={() => isMobile ? setDrawerOpen(true) : setCollapsed((value) => !value)}>
+              {isMobile || collapsed ? <MenuUnfoldOutlined aria-hidden /> : <MenuFoldOutlined aria-hidden />}
+            </button>
+            <div className={styles.crumb} aria-label="当前位置">
+              <span>{boardPage ? <FundOutlined aria-hidden /> : applyPage ? <FormOutlined aria-hidden />
+                : interviewPage ? <ReadOutlined aria-hidden /> : <AppstoreOutlined aria-hidden />}
+                {boardPage || applyPage ? '求职进展' : interviewPage ? '面试备考' : '工作台'}</span>
+              <RightOutlined aria-hidden />
+              <strong>{workspaceTitle}</strong>
+            </div>
+          </div>
+          <div className={styles.headerEnd}>
+            {(!interviewPage || !params.has('session')) && <div className={styles.jobFilter} data-all-jobs={boardPage && !boardJobId || undefined}>
+              {boardPage || applyPage ? <Select aria-label={applyPage ? '选择申请岗位' : '筛选投递岗位'}
+                prefix={<AimOutlined aria-hidden />} value={scopedJob}
+                options={[
+                  applyPage ? { value: 'general', label: '通用简历 · 不绑定岗位' } : { value: '', label: '全部岗位' },
+                  ...(jobs ?? []).map((item) => ({ value: item.id, label: item.company + ' · ' + item.title })),
+                  ...(boardJobId && boardJobId !== 'general' && !jobs?.some((item) => item.id === boardJobId)
+                    ? [{ value: boardJobId, label: '历史岗位' }] : []),
+                ]}
+                optionFilterProp="label" showSearch popupMatchSelectWidth={false}
+                onChange={(value) => {
+                  const next = new URLSearchParams(params)
+                  if (value) next.set('job', value)
+                  else next.delete('job')
+                  if (applyPage) {
+                    next.delete('version')
+                    next.delete('resume')
+                  }
+                  setParams(next)
+                }} /> : <CurrentJobSelect inHeader />}
+            </div>}
+            <Link to="/settings/notify" className={styles.notification} title="消息推送" aria-label="消息推送">
+              <BellOutlined aria-hidden />
+            </Link>
+          </div>
+        </Header> : <Header
           style={{
             flexShrink: 0,
             paddingInline: isMobile ? 12 : 24,
@@ -464,69 +562,19 @@ function MainLayoutContent() {
             </div>
           )}
 
-          <Dropdown
-            menu={{
-              items: [
-                {
-                  key: 'profile',
-                  icon: <UserOutlined />,
-                  label: '个人中心',
-                  onClick: () => navigate('/profile'),
-                },
-                {
-                  key: 'comet-workspace',
-                  icon: <AppstoreOutlined />,
-                  label: 'Comet 工作台',
-                  onClick: () => navigate('/workspace'),
-                },
-                { type: 'divider' },
-                {
-                  key: 'logout',
-                  icon: <LogoutOutlined />,
-                  label: '退出登录',
-                  onClick: onLogout,
-                },
-              ],
-            }}
-          >
-            <Space align="center" style={{ cursor: 'pointer', flexShrink: 0 }}>
-              {user?.avatar ? (
-                <AuthenticatedImage
-                    src={user.avatar}
-                    alt="头像"
-                    style={{
-                      width: 30,
-                      height: 30,
-                      borderRadius: '50%',
-                      objectFit: 'cover',
-                      display: 'block',
-                    }}
-                  />
-                ) : (
-                  <Avatar size={30} style={{ background: '#155EEF' }}>
-                    {user?.username?.[0]?.toUpperCase() ?? <UserOutlined />}
-                  </Avatar>
-                )}
-                {!isMobile && (
-                  <span style={{ fontWeight: 500, color: immersive ? '#fff' : undefined }}>
-                    {user?.nickname || user?.username || '用户'}
-                  </span>
-                )}
-              </Space>
-            </Dropdown>
-          </Header>
-          <Content
-            className="app-shell-content"
-            style={{
-              padding: isMobile ? 14 : 24,
-            }}
-          >
-            {careerPage && !jobWorkspace && !['/career/jobs', '/career/preparation'].includes(location.pathname)
-              && <CurrentJobSelect maxWidth={location.pathname === '/' ? 1280 : 1000} />}
-            <Outlet key={careerPage && !jobWorkspace ? job?.id : undefined} />
-          </Content>
-        </Layout>
-        {immersive && <MusicPlayer />}
+          {(isMobile || immersive) && account(isMobile, false)}
+        </Header>}
+        <Content
+          className={dashboardPage ? 'app-shell-content ' + styles.dashboardContent : 'app-shell-content'}
+          style={dashboardPage ? undefined : { padding: isMobile ? 14 : 24 }}
+        >
+          {careerPage && !dashboardPage && !jobWorkspace
+            && !['/career/jobs', '/career/preparation', '/career/apply'].includes(location.pathname)
+            && <CurrentJobSelect maxWidth={1000} />}
+          <Outlet key={careerPage && !jobWorkspace && !boardPage && !applyPage && !interviewPage ? job?.id : undefined} />
+        </Content>
       </Layout>
-    )
-  }
+      {immersive && <MusicPlayer />}
+    </Layout>
+  )
+}

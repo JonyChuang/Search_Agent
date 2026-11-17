@@ -19,12 +19,17 @@ interface ExperienceMapper {
     @Select("SELECT " + COLUMNS + " FROM career_experience WHERE user_id = #{userId} AND id = #{id}")
     ExperienceService.Entry find(@Param("userId") String userId, @Param("id") String id);
 
-    @Insert("""
+    String INSERT_EXPERIENCE = """
             INSERT INTO career_experience (user_id, id, type, title, organization, start_month, end_month, description, source_note, confirmed)
             VALUES (#{userId}, #{id},
                 #{entry.type}, #{entry.title}, #{entry.organization}, #{entry.startMonth}, #{entry.endMonth}, #{entry.description}, #{entry.sourceNote}, #{entry.confirmed})
-            """)
+            """;
+
+    @Insert(INSERT_EXPERIENCE)
     void insert(@Param("userId") String userId, @Param("id") String id, @Param("entry") ExperienceService.Input entry);
+
+    @Insert(INSERT_EXPERIENCE + " ON DUPLICATE KEY UPDATE id = id")
+    void insertIfAbsent(@Param("userId") String userId, @Param("id") String id, @Param("entry") ExperienceService.Input entry);
 
     @Update("""
             UPDATE career_experience

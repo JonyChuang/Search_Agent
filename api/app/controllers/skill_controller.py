@@ -1,7 +1,8 @@
 """技能（Skill）路由：CRUD + 内置模板列表 + 一键添加。"""
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
@@ -14,8 +15,51 @@ from app.schemas.skill_schema import (
     SkillUpdate,
 )
 from app.services.skill_service import SkillService
+from app.services.skill_packages import MAX_ARCHIVE, SkillPackageService, github_release, invalid, parse_release
 
 router = APIRouter(prefix="/skills", tags=["skill"])
+
+
+async def read_package(file: UploadFile | None, repository: str | None, commit: str | None):
+    if file and not repository and not commit:
+        return parse_release(await file.read(MAX_ARCHIVE + 1), "local")
+    if file is None and repository and commit:
+        return await github_release(repository, commit)
+    raise invalid("请选择 ZIP 文件或指定 GitHub 仓库版本")
+
+
+@router.post("/packages/preview")
+async def preview_package(
+    file: UploadFile | None = File(None), repository: str | None = Form(None), commit: str | None = Form(None),
+    skill_id: uuid.UUID | None = Form(None), user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    release = await read_package(file, repository, commit)
+    return success(await SkillPackageService(session).inspect(user.id, release, skill_id))
+
+
+@router.post("/packages/install")
+async def install_package(
+    digest: str = Form(...), file: UploadFile | None = File(None), repository: str | None = Form(None),
+    commit: str | None = Form(None), skill_id: uuid.UUID | None = Form(None),
+    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+):
+    release = await read_package(file, repository, commit)
+    service = SkillPackageService(session)
+    return success(SkillService.to_out_dict(await service.apply(user.id, release, digest, skill_id)), "版本已安装")
+
+
+class PackageRollback(BaseModel):
+    version: str = Field(min_length=1, max_length=40)
+
+
+@router.post("/{skill_id}/packages/rollback")
+async def rollback_package(
+    skill_id: uuid.UUID, body: PackageRollback, user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = SkillPackageService(session)
+    return success(SkillService.to_out_dict(await service.rollback(user.id, skill_id, body.version)), "已切换版本")
 
 
 @router.get("")

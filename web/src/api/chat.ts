@@ -69,6 +69,8 @@ export interface ChatMessage {
   created_at: string
 }
 
+export type CareerAction = 'CREATE_TRAINING_PLAN' | 'CREATE_INTERVIEW' | 'CREATE_APPLICATION' | 'CREATE_RESUME'
+
 export interface SendOptions {
   conversationId?: string
   message: string
@@ -79,6 +81,9 @@ export interface SendOptions {
   enableKnowledge?: boolean
   enableMemory?: boolean
   enableWebSearch?: boolean
+  careerJobId?: string
+  careerPlanRequestId?: string
+  careerAction?: CareerAction
 }
 
 // SSE 事件回调
@@ -149,11 +154,12 @@ export const chatApi = {
     })
   },
   // 语音转文字（路 B 云端 ASR）：上传音频，返回识别文本。未配 ASR 模型时后端报错降级
-  transcribe(blob: Blob) {
+  transcribe(blob: Blob, signal?: AbortSignal) {
     const form = new FormData()
     const ext = blob.type.includes('wav') ? 'wav' : blob.type.includes('mp4') ? 'm4a' : 'webm'
     form.append('file', blob, `voice.${ext}`)
     return client.post<unknown, Wrapped<{ text: string }>>('/chat/transcribe', form, {
+      signal,
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
@@ -489,6 +495,9 @@ export async function streamChat(
       enable_knowledge: opts.enableKnowledge ?? null,
       enable_memory: opts.enableMemory ?? null,
       enable_web_search: opts.enableWebSearch ?? null,
+      career_job_id: opts.careerJobId ?? null,
+      career_plan_request_id: opts.careerPlanRequestId ?? null,
+      career_action: opts.careerAction ?? null,
     },
     handlers,
     signal,

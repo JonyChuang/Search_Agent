@@ -103,6 +103,15 @@ class MessageRepository:
         rows = list(result.scalars().all())
         return list(reversed(rows))
 
+    async def job_history(self, conv_id: uuid.UUID, user_id: uuid.UUID, job_id: uuid.UUID) -> list[Message]:
+        result = await self.session.execute(
+            select(Message).join(Conversation, Message.conversation_id == Conversation.id)
+            .where(Conversation.id == conv_id, Conversation.user_id == user_id,
+                   Message.meta_data["career_job_id"].astext == str(job_id))
+            .order_by(Message.created_at.desc(), Message.id.desc()).limit(80)
+        )
+        return list(reversed(result.scalars().all()))
+
     async def count(self, conv_id: uuid.UUID) -> int:
         total = await self.session.scalar(
             select(func.count())

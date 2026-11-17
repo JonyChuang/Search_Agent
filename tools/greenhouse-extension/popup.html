@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Greenhouse 投递助手</title>
+  <link rel="stylesheet" href="popup.css">
+  <main>
+    <h1>Greenhouse 投递助手</h1>
+    <label>网申凭证<input id="ticket" type="file" accept=".json,application/json"></label>
+    <p id="origin"></p>
+    <label>本次投递的简历 PDF<input id="resume" type="file" accept=".pdf,application/pdf"></label>
+    <button id="fill" type="button" disabled>填写官网表单</button>
+    <p>请在官网检查填写结果，并补全必填项及验证码。</p>
+    <button id="submit" type="button" disabled>我已核对，提交这份申请</button>
+    <button id="verify" type="button" disabled>读取官网回执</button>
+    <p id="result" role="status" aria-live="polite"></p>
+  </main>
+  <script type="module" src="popup.js"></script>
+</html>

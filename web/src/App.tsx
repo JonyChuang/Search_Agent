@@ -5,6 +5,8 @@ import CareerHomePage from './pages/CareerHomePage'
 import ResumeWorkbenchPage from './pages/ResumeWorkbenchPage'
 import JobWorkspacePage from './pages/JobWorkspacePage'
 import PreparationPage, { LegacyPreparationLink } from './pages/PreparationPage'
+import CareerRemindersPage from './pages/CareerRemindersPage'
+import MockInterviewPage from './pages/MockInterviewPage'
 import { CareerMemoryPage, CareerTasksPage } from './pages/CareerWorkspacePages'
 import { ApplicationAssistantPage, ApplicationBoardPage } from './pages/CareerApplicationsPage'
 import LoginPage from './pages/LoginPage'
@@ -56,10 +58,11 @@ export default function App() {
             <Route path="career/resume" element={<ResumeWorkbenchPage />} />
             <Route path="career/jobs/:jobId?" element={<JobWorkspacePage />} />
             <Route path="career/preparation" element={<PreparationPage />} />
+            <Route path="career/reminders" element={<CareerRemindersPage />} />
             <Route path="career/questions" element={<LegacyPreparationLink page="questions" />} />
             <Route path="career/practice" element={<LegacyPreparationLink page="practice" />} />
             <Route path="career/plan" element={<LegacyPreparationLink page="plan" />} />
-            <Route path="career/interviews" element={<LegacyPreparationLink page="interviews" />} />
+            <Route path="career/interviews" element={<MockInterviewPage />} />
             <Route path="career/memory" element={<CareerMemoryPage />} />
             <Route path="career/tasks" element={<CareerTasksPage />} />
             <Route path="career/apply" element={<ApplicationAssistantPage />} />

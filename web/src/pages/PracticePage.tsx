@@ -1,12 +1,12 @@
 import { useCallback, useState } from 'react'
-import { Alert, Button, Card, Collapse, List, Radio, Space, Spin, Tabs, Tag, Typography } from 'antd'
+import { Alert, Button, Card, Collapse, Empty, List, Radio, Segmented, Space, Spin, Tabs, Tag, Typography } from 'antd'
 import { Link, useSearchParams } from 'react-router-dom'
 import { practiceApi, type Attempt, type Question, type Submission } from '@/api/practice'
 import { useAuthStore } from '@/stores/authStore'
 import { practiceLink, roleLabel } from './career/QuestionCatalog'
 import { useCurrentJob } from './career/CurrentJob'
 import { useCareerQuery } from './career/useCareerQuery'
-import { preparationPath } from './career/paths'
+import { interviewPath, preparationPath } from './career/paths'
 
 const { Paragraph, Text, Title } = Typography
 const choices = ['A', 'B', 'C', 'D']
@@ -23,15 +23,17 @@ function Feedback({ attempt }: { attempt: Attempt }) {
   )
 }
 
-function AnswerForm({ question, storageKey, jobId }: { question: Question; storageKey: string; jobId?: string }) {
+function AnswerForm({ question, storageKey, jobId, onNext, requestId, previous }: {
+  question: Question; storageKey: string; jobId?: string; onNext?: () => void; requestId?: string; previous?: Attempt | null
+}) {
   const scope = jobId ? { job: jobId } : undefined
   const [pending, setPending] = useState<Submission | undefined>(() => {
     const saved = sessionStorage.getItem(storageKey)
     return saved ? JSON.parse(saved) as Submission : undefined
   })
-  const [answer, setAnswer] = useState(pending?.answer)
+  const [answer, setAnswer] = useState(previous?.answer ?? pending?.answer)
   const [saving, setSaving] = useState(false)
-  const [result, setResult] = useState<Attempt>()
+  const [result, setResult] = useState(previous ?? undefined)
   const [error, setError] = useState<string>()
 
   async function submit() {
@@ -40,7 +42,7 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
     setError(undefined)
     try {
       const submission = pending ?? {
-        requestId: crypto.randomUUID(),
+        requestId: requestId ?? crypto.randomUUID(),
         questionId: question.id,
         questionVersion: question.version,
         answer,
@@ -60,13 +62,13 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
 
   return (
     <Space direction="vertical" size="middle" style={{ display: 'flex' }}>
-      <Link to={preparationPath('library', scope)}>返回面经与题库</Link>
+      {!onNext && <Link to={preparationPath('library', scope)}>返回面经与题库</Link>}
       <Space wrap>
         <Tag>{roleLabel(question.role)}</Tag>
         <Text type="secondary">{question.topic} · 单选题</Text>
       </Space>
       <Title level={4} style={{ margin: 0 }}>{question.prompt}</Title>
-      <Radio.Group aria-label="作答选项" value={answer} disabled={!!pending || !!result || saving} onChange={(event) => setAnswer(event.target.value)}>
+      <Radio.Group aria-label="作答选项" value={answer ?? null} disabled={!!pending || !!result || saving} onChange={(event) => setAnswer(event.target.value)}>
         <Space direction="vertical">
           {question.options.map((option, index) => (
             <Radio key={choices[index]} value={choices[index]}>{choices[index]} · {option}</Radio>
@@ -80,9 +82,9 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
           <Typography.Link href={question.sourceUrl} target="_blank" rel="noopener noreferrer">
             {question.sourceName}
           </Typography.Link>
-          <Link to={preparationPath(result.correct ? 'library' : 'review', scope)}>
+          {onNext ? <Button type="primary" onClick={onNext}>继续练习</Button> : <Link to={preparationPath(result.correct ? 'library' : 'review', scope)}>
             {result.correct ? '继续选题' : '查看错题本'}
-          </Link>
+          </Link>}
         </>
       ) : (
         <Button type="primary" loading={saving} disabled={!answer} onClick={submit}>
@@ -93,7 +95,9 @@ function AnswerForm({ question, storageKey, jobId }: { question: Question; stora
   )
 }
 
-function SelectedQuestion({ id, version, jobId }: { id: string; version?: string; jobId?: string }) {
+export function SelectedQuestion({ id, version, jobId, onNext, requestId, previous }: {
+  id: string; version?: string; jobId?: string; onNext?: () => void; requestId?: string; previous?: Attempt | null
+}) {
   const userId = useAuthStore((state) => state.user?.id)
   const load = useCallback((signal: AbortSignal) => practiceApi.question(id, signal, version), [id, version])
   const { data, error, retry } = useCareerQuery(load)
@@ -106,23 +110,31 @@ function SelectedQuestion({ id, version, jobId }: { id: string; version?: string
     )
   }
   if (!data || !userId) return <Spin />
-  const storageKey = `career-attempt:${userId}:${data.id}:${data.version}${jobId ? `:${jobId}` : ''}`
-  return <AnswerForm key={storageKey} storageKey={storageKey} question={data} jobId={jobId} />
+  const storageKey = `career-attempt:${userId}:${requestId ?? `${data.id}:${data.version}${jobId ? `:${jobId}` : ''}`}`
+  return <AnswerForm key={storageKey} storageKey={storageKey} question={data} jobId={jobId} onNext={onNext}
+    requestId={requestId} previous={previous} />
 }
 
-function WrongQuestions({ jobId }: { jobId?: string }) {
+function EmptyObjectiveReview({ description, jobId }: { description: string; jobId?: string }) {
+  return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={description}>
+    <Link to={preparationPath('library', jobId ? { job: jobId } : undefined)}>去公开题库做客观题</Link>
+  </Empty>
+}
+
+function WrongQuestions({ jobId, practiceJobId }: { jobId?: string; practiceJobId?: string }) {
   const load = useCallback((signal: AbortSignal) => practiceApi.wrongQuestions(signal, jobId), [jobId])
   const { data, error, retry } = useCareerQuery(load)
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
   if (!data) return <Spin />
+  if (!data.length) return <EmptyObjectiveReview jobId={practiceJobId}
+    description={jobId ? '本岗位暂无答错的单选题' : '暂无答错的单选题'} />
 
   return (
     <List
       dataSource={data}
       rowKey="questionId"
-      locale={{ emptyText: '还没有错题' }}
       renderItem={(question) => (
-        <List.Item actions={[<Link key="review" to={practiceLink(question.questionId, undefined, jobId)}>重新作答</Link>]}>
+        <List.Item actions={[<Link key="review" to={practiceLink(question.questionId, undefined, practiceJobId)}>重新作答</Link>]}>
           <List.Item.Meta
             title={question.prompt}
             description={
@@ -138,7 +150,9 @@ function WrongQuestions({ jobId }: { jobId?: string }) {
   )
 }
 
-function HistoryPage({ page, onPage, jobId }: { page: number; onPage: (page: number) => void; jobId?: string }) {
+function HistoryPage({ page, onPage, jobId, practiceJobId }: {
+  page: number; onPage: (page: number) => void; jobId?: string; practiceJobId?: string
+}) {
   const load = useCallback((signal: AbortSignal) => practiceApi.attempts(page, signal, jobId), [page, jobId])
   const { data, error, retry } = useCareerQuery(load)
   if (error) return <Alert type="error" message={error} action={<Button onClick={retry}>重试</Button>} />
@@ -153,7 +167,7 @@ function HistoryPage({ page, onPage, jobId }: { page: number; onPage: (page: num
           extra: <Tag color={attempt.correct ? 'green' : 'volcano'}>{attempt.correct ? '答对' : '答错'}</Tag>,
           children: <Feedback attempt={attempt} />,
         }))} />
-      ) : <Text type="secondary">暂无作答记录</Text>}
+      ) : <EmptyObjectiveReview jobId={practiceJobId} description={jobId ? '本岗位暂无单选题作答记录' : '暂无单选题作答记录'} />}
       {(page > 1 || data.hasMore) && (
         <Space>
           <Button disabled={page === 1} onClick={() => onPage(page - 1)}>上一页</Button>
@@ -174,7 +188,14 @@ export default function PracticePage({ review = false }: { review?: boolean }) {
   const jobId = linkedJob ?? job?.id
   const scope = jobId ? { job: jobId } : undefined
   const question = params.get('question')
-  const section = params.get('section')
+  const section = params.get('section') === 'history' ? 'history' : 'wrong'
+  const allRecords = params.get('objective') === 'all'
+  const reviewJobId = allRecords ? undefined : jobId
+
+  function updateReview(key: string, all: boolean) {
+    setPage(1)
+    setParams({ tab: 'review', section: key, ...(linkedJob ? { job: linkedJob } : {}), ...(all ? { objective: 'all' } : {}) })
+  }
 
   if (!review) return <Card>
     {question
@@ -184,18 +205,19 @@ export default function PracticePage({ review = false }: { review?: boolean }) {
         <Space wrap>
           <Link to={preparationPath('plan', scope)}>查看备考计划</Link>
           <Link to={preparationPath('library', scope)}>从题库选题</Link>
-          <Link to={preparationPath('interview', scope)}>开始模拟面试</Link>
+          <Link to={interviewPath(scope)}>开始模拟面试</Link>
         </Space>
       </>}
   </Card>
 
-  return <Card title="客观题复盘">
-    <Tabs activeKey={section === 'history' ? 'history' : 'wrong'} destroyOnHidden onChange={(key) => {
-      setPage(1)
-      setParams({ tab: 'review', section: key, ...(linkedJob ? { job: linkedJob } : {}) })
-    }} items={[
-      { key: 'wrong', label: '错题本', children: <WrongQuestions jobId={jobId} /> },
-      { key: 'history', label: '练习记录', children: <HistoryPage key={`${jobId}:${page}`} page={page} onPage={setPage} jobId={jobId} /> },
+  return <Card title="客观题复盘" extra={jobId && <Segmented size="small" aria-label="客观题记录范围"
+    value={allRecords ? 'all' : 'job'} options={[{ label: '本岗位', value: 'job' }, { label: '全部记录', value: 'all' }]}
+    onChange={(value) => updateReview(section, value === 'all')} />}>
+    <Text type="secondary">错题本收录答错过的单选题，练习记录保留每次单选题提交。</Text>
+    <Tabs activeKey={section} destroyOnHidden onChange={(key) => updateReview(key, allRecords)} items={[
+      { key: 'wrong', label: '错题本', children: <WrongQuestions key={reviewJobId ?? 'all'} jobId={reviewJobId} practiceJobId={jobId} /> },
+      { key: 'history', label: '练习记录', children: <HistoryPage key={`${reviewJobId}:${page}`}
+        page={page} onPage={setPage} jobId={reviewJobId} practiceJobId={jobId} /> },
     ]} />
   </Card>
 }

@@ -1,7 +1,7 @@
 """对话路由：会话 CRUD + SSE 流式问答。"""
 import uuid
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Header, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,10 +84,11 @@ async def chat_stream(
     body: ChatStreamRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    authorization: str | None = Header(default=None),
 ):
     service = ChatService(session)
     return StreamingResponse(
-        service.stream_chat(user.id, body),
+        service.stream_chat(user.id, body, authorization=authorization),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -261,11 +262,12 @@ async def regenerate_message(
     message_id: uuid.UUID,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    authorization: str | None = Header(default=None),
 ):
     """重新生成某条 AI 回复（SSE 流式，复用问答管线）。"""
     service = ChatService(session)
     return StreamingResponse(
-        service.regenerate(user.id, message_id),
+        service.regenerate(user.id, message_id, authorization),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

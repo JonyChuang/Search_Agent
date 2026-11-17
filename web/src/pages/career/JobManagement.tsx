@@ -1,6 +1,7 @@
+import { useEffect } from 'react'
 import { Button, Card, Col, Form, Input, Row, Space, Tag, Typography } from 'antd'
 import { FileSearchOutlined, IdcardOutlined, ReadOutlined, RightOutlined } from '@ant-design/icons'
-import { Link as RouteLink } from 'react-router-dom'
+import { Link as RouteLink, useSearchParams } from 'react-router-dom'
 import { careerApi, type JobInput } from '@/api/career'
 import CareerRecordList from './CareerRecordList'
 import { useCurrentJob } from './CurrentJob'
@@ -11,6 +12,15 @@ const { Link, Paragraph, Text } = Typography
 
 export default function JobManagement() {
   const target = useCurrentJob()
+  const [params, setParams] = useSearchParams()
+  const startCreating = params.get('add') === '1'
+  useEffect(() => {
+    if (!startCreating) return
+    const next = new URLSearchParams(params)
+    next.delete('add')
+    setParams(next, { replace: true })
+  }, [params, setParams, startCreating])
+
   return (
     <div className={target.job ? styles.grid : undefined}>
       <CareerRecordList<JobInput>
@@ -18,6 +28,7 @@ export default function JobManagement() {
         label="岗位"
         api={careerApi.jobs}
         onChange={target.reload}
+        initialCreate={startCreating}
         defaults={() => ({ sourcedOn: new Date().toLocaleDateString('sv-SE') })}
         normalize={(values) => ({
           company: values.company.trim(),

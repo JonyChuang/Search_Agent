@@ -1,0 +1,8 @@
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .42fr); gap: 14px; align-items: start; }
+.stack { display: grid; gap: 12px; width: 100%; min-width: 0; align-content: start; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.filters > * { min-width: 132px; }
+.filters :global(.ant-input-search) { flex: 1 1 240px; }
+@media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 460px) { .filters > * { flex: 1 1 42%; } }
+

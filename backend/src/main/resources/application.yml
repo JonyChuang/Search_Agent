@@ -8,11 +8,15 @@ spring:
   task:
     scheduling:
       pool:
-        size: 2
+        size: 4
   datasource:
     url: ${CAREER_MYSQL_URL:jdbc:mysql://127.0.0.1:3307/search_agent?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
     username: ${CAREER_MYSQL_USER:career}
     password: ${CAREER_MYSQL_PASSWORD}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 62MB
 
 management:
   health:
@@ -35,6 +39,14 @@ management:
       show-details: never
 
 career:
+  judge:
+    base-url: ${CAREER_JUDGE0_URL:}
+    token: ${CAREER_JUDGE0_TOKEN:}
+    python-id: ${CAREER_JUDGE0_PYTHON_ID:71}
+  content:
+    curators: ${CAREER_CONTENT_CURATORS:}
+    feeds: ${CAREER_PUBLIC_NOTE_FEEDS:}
+    refresh-cron: ${CAREER_PUBLIC_NOTE_REFRESH_CRON:0 0 9 * * MON}
   auth:
     jwt-secret: ${JWT_SECRET}
     jwt-algorithm: ${JWT_ALGORITHM:HS256}

@@ -19,10 +19,11 @@ class SkillRepository:
         )
         return list(result.scalars().all())
 
-    async def get(self, user_id: uuid.UUID, skill_id: uuid.UUID) -> Skill | None:
-        result = await self.session.execute(
-            select(Skill).where(Skill.id == skill_id, Skill.user_id == user_id)
-        )
+    async def get(self, user_id: uuid.UUID, skill_id: uuid.UUID, *, lock: bool = False) -> Skill | None:
+        query = select(Skill).where(Skill.id == skill_id, Skill.user_id == user_id)
+        if lock:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
     async def count(self, user_id: uuid.UUID) -> int:

@@ -49,6 +49,8 @@ coverage/
 .vscode/
 # ===== 构建产物 =====
 /backend/target/
+/api/storage/*
+!/api/storage/.gitkeep
 *.log
 logs/
 tmp/

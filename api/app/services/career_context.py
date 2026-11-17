@@ -78,15 +78,23 @@ def prepare_context(raw: dict, saved: dict | None, skill: dict, sources: list[di
 
     job = raw["job"]
     payload = {**raw, "job": {**job, "jd": excerpt(job.get("jd", ""), 1800)}}
+    if "allowFollowUp" in payload:
+        payload["answer"] = excerpt(payload["answer"], 3800)
+        if "mainAnswer" in payload:
+            payload["mainAnswer"] = excerpt(payload["mainAnswer"], 900)
     payload.pop("documentIds", None)
     payload.pop("skillId", None)
+    payload.pop("preparationId", None)
     if skill.get("selected"):
         payload["skillGuidance"] = skill["selected"]["guidance"]
     feedback = payload.pop("feedback", [])
+    interview_feedback = payload.pop("interviewFeedback", [])
     facts = payload.pop("experiences", [])
     plan = payload.get("plan")
     if plan:
         payload["plan"] = {"analysis": excerpt(plan.get("analysis", ""), 550), "steps": plan.get("steps", [])[:4]}
+    if payload.get("revisionReview"):
+        payload["revisionReview"] = excerpt(payload["revisionReview"], 600)
     if payload.get("preferences"):
         notes = payload["preferences"]
         payload["preferences"] = {**notes, "notes": excerpt(notes["notes"], 500)}
@@ -95,7 +103,11 @@ def prepare_context(raw: dict, saved: dict | None, skill: dict, sources: list[di
         {"id": source["id"], "title": source["file_name"], "revision": source["revision"]}
         for source in sources
     ]
-    for field, values, limit in (("experiences", facts, 500), ("feedback", feedback, 650)):
+    for field, values, limit in (
+        ("interviewFeedback", interview_feedback, 180),
+        ("experiences", facts, 500),
+        ("feedback", feedback, 650),
+    ):
         if values:
             payload[field] = []
         for value in values:
@@ -117,7 +129,9 @@ def document_excerpts(sources: list[dict], job: dict) -> list[dict]:
 
 async def assemble_context(user_id: UUID, raw: dict, saved: dict | None, skill: dict) -> tuple[dict, dict]:
     sources = await asyncio.gather(*(read_source(user_id, item) for item in raw.get("documentIds", [])))
-    documents = document_excerpts(sources, raw["job"])
+    job = raw["job"]
+    focus = "面试 面经 面试过程 面试问题" if raw.get("purpose") == "NOTES" else raw.get("topic", "")
+    documents = document_excerpts(sources, {**job, "skills": f"{focus} {job.get('skills', '')}"})
     prepared = prepare_context(raw, saved, skill, sources, count_tokens(encode(documents)))
     payload = {**prepared["payload"], "documents": documents}
     if count_tokens(encode(payload)) > CONTEXT_TOKENS:

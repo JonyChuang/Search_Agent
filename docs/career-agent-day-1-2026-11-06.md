@@ -46,6 +46,8 @@ if ($uvExe) {
 
 在仓库根目录启动存储，并保留当前终端运行 Java。
 
+启动前可先打开 [求职后端健康检查](http://localhost:8080/api/career/health)。如果页面显示 `UP`，可以直接打开或刷新 [本地工作台](http://localhost:5173)。Java 默认监听 `8080`，同一端口重复启动会让 Maven 报 `Process terminated with exit code: 1`。
+
 ```powershell
 if (!(Test-Path .env)) { Copy-Item .env.example .env }
 $env:CAREER_MYSQL_PASSWORD = Read-Host '本地 MySQL career 用户密码' -MaskInput
@@ -61,7 +63,7 @@ Set-Location backend
 
 MySQL 复用现有数据卷时，继续使用该卷初始化时为 `career` 设置的密码。已有可用的 MySQL 8.4 实例也可以使用。为 Java 设置 `CAREER_MYSQL_URL`、`CAREER_MYSQL_USER` 和 `CAREER_MYSQL_PASSWORD`，并确保账号有权在专用库中执行迁移。
 
-在另一个终端从仓库根目录进入 `api`。在本地 `api/.env` 填入与 Java 相同的 `CAREER_AGENT_INTERNAL_TOKEN`，并按 [Comet 运行说明](../README.md#第-3-步配置并启动后端) 设置本地 JWT 与 Fernet 密钥。Python 用 Alembic 更新自己的 PostgreSQL 表。
+在另一个终端从仓库根目录进入 `api`。按[本地配置说明](../README.md#1-配置并启动存储)填写 `api/.env`，确保内部令牌和 JWT 配置与 Java 一致。Python 用 Alembic 更新 PostgreSQL 表。
 
 ```powershell
 Set-Location api
@@ -81,6 +83,16 @@ npm run dev
 ```
 
 打开 [本地前端](http://localhost:5173)。通过前端代理访问 [Java 就绪检查](http://localhost:5173/api/career/health) 应返回 HTTP 200，`db` 和 `agent` 状态均为 `UP`。通过同一代理访问 [Comet hello 接口](http://localhost:5173/api/hello) 可确认原 Python 路由可达。随后打开 [Comet 存储检查](http://localhost:5173/api/health)，确认 `data.healthy` 为 `true`。
+
+## 容器部署
+
+在仓库根目录的 `.env` 配置 `JWT_SECRET`、`FERNET_KEY`、`CAREER_MYSQL_PASSWORD` 和 `CAREER_AGENT_INTERNAL_TOKEN`。使用已有数据库时沿用原密钥。在 `web/nginx.conf` 中设置部署域名和证书文件名，将证书放入 `web/certs/`，再从仓库根目录运行。
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
+```
+
+这组配置会运行 Java、Python 和 MySQL。通过部署域名检查 `/api/career/health` 和 `/api/hello`，分别确认两条代理路径。生产库使用同一 Compose 项目下的 `career_mysql_data` 数据卷。迁移此前独立开发库的数据时，先备份和恢复到生产库，再启动 Java 执行 Flyway。
 
 如需确认迁移版本，在设置了 `CAREER_MYSQL_PASSWORD` 的终端回到仓库根目录，执行下列命令，并在提示后输入数据库密码。
 
@@ -108,6 +120,12 @@ flowchart LR
 Vite 将 `/api/career` 路由至 Java，其余 `/api` 路由仍到 Python。`/internal/v1` 只供服务间访问。Java 连接和读取分别限制为 2 秒与 3 秒，认证失败或响应不符合契约时将 Agent 标记为 `DOWN`。
 
 Java 验证 Comet 访问令牌的签名、有效期及 `type=access`，从 `sub` 取得用户 UUID。任务派发携带 Java 确定的用户和执行租约，写入结果时校验租约。完整流程见[岗位训练与申请材料](career-agent-day-4-5-workflow.md)。
+
+### 公开题库与面经维护
+
+Java 启动环境可设置 `CAREER_CONTENT_CURATORS`（有权审核的账号 UUID，多个用逗号分隔）。维护者登录后可以在「备考中心 → 面经与题库 → 内容审核」新增面经、创建或修订单选题草稿，核对后发布。账号 UUID 可在登录后的 `/api/auth/me` 响应 `data.id` 中查看。
+
+`CAREER_PUBLIC_NOTE_FEEDS` 接收逗号分隔的公开 RSS 或 Atom 地址。填入已确认可用的订阅后，可以点击「检查公开来源」，也可由 `CAREER_PUBLIC_NOTE_REFRESH_CRON` 定时采集。默认上海时间每周一 9:00，设为 `-` 可关闭定时。订阅记录先进入待审核列表，由维护者核对并补齐摘要后发布。
 
 ## 真实模型验收
 

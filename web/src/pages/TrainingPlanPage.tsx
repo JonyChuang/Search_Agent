@@ -8,7 +8,7 @@ import PreparationDocuments from './career/PreparationDocuments'
 import TaskHistory from './career/TaskHistory'
 import { useCareerAction } from './career/useCareerAction'
 import { useCareerQuery } from './career/useCareerQuery'
-import { jobPath, preparationPath } from './career/paths'
+import { jobPath, preparationPath, resumeStudioPath } from './career/paths'
 import type { JobInput } from '@/api/career'
 import TrainingPlanCard from './career/TrainingPlanCard'
 import PreparationSidebar, { LatestReview } from './career/PreparationSidebar'
@@ -19,6 +19,7 @@ const { Paragraph } = Typography
 export default function TrainingPlanPage({ job }: { job?: JobInput & { id: string } }) {
   const { jobs, loading } = useCurrentJob()
   const [params] = useSearchParams()
+  const planId = params.get('plan') ?? undefined
   const sourceId = params.get('source')
   const source = sourceId && /^[0-9a-f-]{36}$/.test(sourceId) ? sourceId : undefined
   const loadPreparation = useCallback((signal: AbortSignal) =>
@@ -38,13 +39,16 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
     ? [linkedDocument] : [])
   const [skillId, setSkillId] = useState<string>()
   const training = useCareerAction()
-  const [createOpen, setCreateOpen] = useState(!!(linkedDocument || source))
+  const fromInterview = params.get('create') === '1'
+  const showCreateFirst = Boolean(linkedDocument || source || fromInterview)
+  const [createOpen, setCreateOpen] = useState(showCreateFirst)
 
   const createPanel = <Collapse activeKey={createOpen ? ['create'] : []} onChange={(keys) => setCreateOpen(keys.includes('create'))}
     items={[{ key: 'create', label: '创建训练计划', children: <>
         {preparation.error && <Alert type="error" message={preparation.error} action={<Button onClick={preparation.retry}>重试</Button>} />}
         {source && preparation.data && !latest && <Alert type="warning" message="此岗位无法使用所选模拟题批次。"
           action={<Link to={preparationPath('plan', job ? { job: job.id } : undefined)}>继续使用最近题目</Link>} />}
+        {fromInterview && <Alert type="info" showIcon message="新计划会参考本岗位近期的多轮面试点评。" />}
         <Form layout="vertical" onFinish={(values: { jobId: string; role?: string }) => training.run(async () => {
           const input = job ? { jobId: job.id, preparationId: latest?.id, preferredQuestion } : values
           await training.submit('training', { ...input, documentIds, skillId }, careerWorkflow.training)
@@ -74,7 +78,7 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
               disabled={loading || !jobs?.length || (!!job && !preparation.data)
                 || (!!source && !latest) || (!!preferredQuestion && !preferred)}>生成计划</Button>
             <Link to={preparationPath('library', job ? { job: job.id } : undefined)}>查看岗位题库</Link>
-            <Link to="/career/resume">确认经历</Link>
+            <Link to={resumeStudioPath}>确认经历</Link>
             {job && <Link to={jobPath(job.id)}>公司调研</Link>}
             {job && <Link to={jobPath(job.id, 'memory')}>备考偏好</Link>}
           </Space>
@@ -82,7 +86,7 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
     </> }]} />
 
   return (
-    <TaskHistory refresh={trainingRefresh} kind="TRAINING" jobId={job?.id}
+    <TaskHistory refresh={trainingRefresh} kind="TRAINING" jobId={job?.id} taskId={planId}
       emptyText="还没有训练计划。可创建计划，或先从面经与题库选题。"
       renderTask={(task, featured) => featured ? <TrainingPlanCard task={task} /> : <Collapse size="small" ghost items={[{
         key: task.id,
@@ -91,10 +95,11 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
       }]} />}
       layout={(history, tasks) => <div className={styles.grid}>
         <div className={styles.stack}>
-          {(linkedDocument || source) && createPanel}
+          {planId && <Link to={preparationPath('plan', job ? { job: job.id } : undefined)}>查看此岗位的全部备考计划</Link>}
+          {showCreateFirst && createPanel}
           {history}
           <LatestReview jobId={job?.id} />
-          {!(linkedDocument || source) && createPanel}
+          {!showCreateFirst && !planId && createPanel}
         </div>
         <PreparationSidebar jobId={job?.id} plan={tasks.find((task) => task.status === 'SUCCEEDED')} />
       </div>} />
