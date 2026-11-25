@@ -106,7 +106,7 @@ export default function CareerHomePage() {
   const correct = attempts?.filter((attempt) => attempt.correct).length
   const confirmed = experiences.data?.filter((entry) => entry.confirmed).length
   const progressText = hasProgress && questions.length ? completed + ' / ' + questions.length : undefined
-  const failures = [training, practice, experiences, applications, models, progress].filter(({ error }) => error)
+  const failures = [training, practice, experiences, applications, progress].filter(({ error }) => error)
 
   function nextAction() {
     if (target.loading) return { title: '正在读取当前岗位', note: '', label: '查看岗位', to: '/career/jobs' }
@@ -146,6 +146,9 @@ export default function CareerHomePage() {
         if (target.error) target.reload()
         failures.forEach(({ retry }) => retry())
       }}>重试</Button>} />}
+    {models.error && <Alert type="warning" showIcon
+      message="暂时无法读取模型配置。"
+      action={<Button size="small" onClick={models.retry}>重试</Button>} />}
     <section className={styles.hero} aria-labelledby="overview-next">
       <div className={styles.orbit} aria-hidden="true" />
       <div className={styles.heroCopy}>

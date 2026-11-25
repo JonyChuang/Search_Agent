@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { Alert, Button, List, Modal, Space, Typography } from 'antd'
 import { FileTextOutlined } from '@ant-design/icons'
+import { Link } from 'react-router-dom'
 import { documentApi, type DocumentPreview } from '@/api/documents'
 import { careerWorkflow, type CareerTask } from '@/api/careerWorkflow'
 import { useCareerAction } from './useCareerAction'
@@ -8,6 +9,9 @@ import { useCareerQuery } from './useCareerQuery'
 import styles from './workspace.module.css'
 
 const stepLabels: Record<string, string> = {
+  resume_context: '沿用备考上下文检查点',
+  resume_catalog: '沿用候选题检查点',
+  resume_draft: '从已保存的计划草稿完成任务',
   assemble_context: '装配备考上下文',
   list_training_questions: '读取候选题',
   create_training_plan: '生成训练计划',
@@ -66,6 +70,7 @@ export default function TaskDetails({ task, referenceList = false }: { task: Car
         {preview?.truncated && <Typography.Text type="secondary">原文预览已截断。</Typography.Text>}
       </Modal>
       <Modal open={trace} title="Agent 执行记录" footer={null} onCancel={() => setTrace(false)} width={680}>
+        <Link to={`/traces?task_id=${task.id}`}>查看采样轨迹</Link>
         {trace && <Events id={task.id} />}
       </Modal>
     </Space>

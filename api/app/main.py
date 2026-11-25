@@ -1,4 +1,5 @@
 """FastAPI 应用入口。"""
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from app.controllers.router import api_router
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import get_logger, setup_logging
 from app.core.request_context import RequestContextMiddleware
-from app.db import elastic, neo4j, postgres, redis
+from app.db import career, elastic, neo4j, postgres, redis
 
 setup_logging()
 logger = get_logger(__name__)
@@ -18,6 +19,10 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    if settings.career_native_worker_enabled and not settings.career_mysql_host:
+        raise RuntimeError("CAREER_NATIVE_WORKER_ENABLED requires CAREER_MYSQL_HOST")
+    if settings.career_mysql_host:
+        await career.verify_career_schema()
     # 启动：自动把数据库升级到最新迁移（alembic upgrade head）
     from app.db.migrate import upgrade_to_head
 
@@ -47,13 +52,36 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.warning("Tracing 落库器启动失败（稍后可重试）: %s", e)
     logger.info("%s 启动完成", settings.app_name)
-    yield
+    workers = []
+    if settings.career_native_worker_enabled:
+        from app.controllers.career_content_controller import curators, feed_schedule, poll_feeds
+        from app.controllers.career_judge_controller import configured_url, poll_judge
+        from app.services.career_reminders import poll_reminders
+        from app.services.career_worker import poll_career_queue, poll_interview_recovery
+
+        curators()
+        feeds = feed_schedule()
+        judge = configured_url()
+        workers = [asyncio.create_task(poll_career_queue()) for _ in range(4)]
+        workers.append(asyncio.create_task(poll_interview_recovery()))
+        workers.append(asyncio.create_task(poll_reminders()))
+        if judge:
+            workers.extend(asyncio.create_task(poll_judge()) for _ in range(2))
+        if feeds:
+            workers.append(asyncio.create_task(poll_feeds()))
+    try:
+        yield
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
     # 关闭:先停 Tracing 落库器,把残留 span 排空
     try:
         await get_recorder().stop()
     except Exception as e:
         logger.warning("Tracing 落库器关闭异常: %s", e)
     # 关闭：释放长连接 / 连接池
+    await career.close()
     await postgres.close()
     await elastic.close()
     await neo4j.close()

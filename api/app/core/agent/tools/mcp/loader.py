@@ -17,10 +17,12 @@ from contextlib import AsyncExitStack, asynccontextmanager
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool, load_mcp_tools
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.agent.tools.mcp.connection import CONNECT_TIMEOUT, build_connection
+from app.core.agent.tools.mcp.tool_cache import load_descriptors
 from app.core.logging import get_logger
 from app.models.mcp_server_model import MCPServer
 from app.repositories.mcp_server_repository import MCPServerRepository
@@ -63,6 +65,34 @@ async def _load_raw_tools(server: MCPServer) -> list[BaseTool]:
 async def _load_raw_tools_timed(server: MCPServer) -> list[BaseTool]:
     """带超时的单 server 加载，超时/失败向上抛，由 gather 汇总。"""
     return await asyncio.wait_for(_load_raw_tools(server), timeout=_MCP_LOAD_TIMEOUT)
+
+
+async def _load_for_chat(server: MCPServer) -> list[BaseTool]:
+    if not settings.mcp_shared_tool_cache_enabled:
+        return await _load_raw_tools_timed(server)
+    connection = build_connection(server)
+    client = MultiServerMCPClient({str(server.id): connection})
+
+    async def fetch():
+        async with client.session(str(server.id)) as session:
+            tools = []
+            cursor = None
+            seen = set()
+            while True:
+                page = await session.list_tools(cursor=cursor)
+                tools.extend(page.tools)
+                cursor = page.nextCursor
+                if cursor is None:
+                    return tools
+                if cursor in seen:
+                    raise ValueError("Repeated MCP pagination cursor")
+                seen.add(cursor)
+
+    async with asyncio.timeout(_MCP_LOAD_TIMEOUT):
+        descriptors = await load_descriptors(
+            str(server.user_id), str(server.id), _servers_fingerprint([server]), fetch,
+        )
+    return [convert_mcp_tool_to_langchain_tool(None, item, connection=connection) for item in descriptors]
 
 
 def _rename(tool: BaseTool, prefix: str, seen: set[str]) -> None:
@@ -110,12 +140,12 @@ async def build_mcp_tools(
     fingerprint = _servers_fingerprint(servers)
     now = time.monotonic()
     cached = _MCP_CACHE.get(uid)
-    if cached and cached[0] > now and cached[1] == fingerprint:
+    if not settings.mcp_shared_tool_cache_enabled and cached and cached[0] > now and cached[1] == fingerprint:
         return list(cached[2])  # 复用缓存（返回副本，避免外部改名污染缓存）
 
     started = time.monotonic()
     results = await asyncio.gather(
-        *[_load_raw_tools_timed(s) for s in servers],
+        *[_load_for_chat(s) for s in servers],
         return_exceptions=True,
     )
 
@@ -146,7 +176,8 @@ async def build_mcp_tools(
     # 成功子集也缓存：否则像 stock 这种常挂节点会让「had_failure」每轮都为真，
     # 缓存永远写不进去，每条消息都要重新握手（常见多等 5~8 秒）。
     # 指纹随 server 配置变化失效；坏节点在 TTL 内不重试，可在工具页关掉或等缓存过期。
-    _MCP_CACHE[uid] = (now + _MCP_CACHE_TTL, fingerprint, list(tools))
+    if not settings.mcp_shared_tool_cache_enabled:
+        _MCP_CACHE[uid] = (now + _MCP_CACHE_TTL, fingerprint, list(tools))
     return tools
 
 

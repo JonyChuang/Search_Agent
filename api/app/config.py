@@ -1,13 +1,18 @@
 """应用配置：全部从环境变量 / .env 读取，不硬编码。"""
 from functools import lru_cache
+from pathlib import Path
 
-from pydantic import SecretStr
+from dotenv import dotenv_values
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_API_ROOT = Path(__file__).resolve().parents[1]
+_PROJECT_ROOT = _API_ROOT.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=_API_ROOT / ".env", env_file_encoding="utf-8", extra="ignore"
     )
 
     # 应用
@@ -25,7 +30,36 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 30
     fernet_key: str = "change-me-fernet-key"
     career_backend_base_url: str = "http://127.0.0.1:8080"
+    career_mysql_host: str = ""
+    career_mysql_port: int = 3307
+    career_mysql_database: str = "search_agent"
+    career_mysql_user: str = "career"
+    career_mysql_password: SecretStr = SecretStr("")
+    career_native_worker_enabled: bool = False
+    mcp_shared_tool_cache_enabled: bool = False
+    memory_shared_recall_cache_enabled: bool = False
+    career_chat_context_window: int = 32768
+    career_chat_reserved_output: int = 2048
+    career_judge0_url: str = ""
+    career_judge0_token: SecretStr = SecretStr("")
+    career_judge0_python_id: int = 71
+    career_content_curators: str = ""
+    career_public_note_feeds: str = ""
+    career_public_note_refresh_cron: str = "0 0 9 * * MON"
     career_agent_internal_token: SecretStr = SecretStr("")
+
+    @field_validator("career_mysql_password")
+    @classmethod
+    def fallback_to_compose_password(cls, password: SecretStr) -> SecretStr:
+        """Reuse the local Compose credential when the API has no override."""
+        if password.get_secret_value() or not (_PROJECT_ROOT / "compose.career.yml").is_file():
+            return password
+        root_env = _PROJECT_ROOT / ".env"
+        if root_env.is_file():
+            shared = dotenv_values(root_env, encoding="utf-8-sig", interpolate=False).get("CAREER_MYSQL_PASSWORD")
+            if shared:
+                return SecretStr(shared)
+        return password
 
     # PostgreSQL
     postgres_host: str = "localhost"

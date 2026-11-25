@@ -2,8 +2,9 @@
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 import httpx
@@ -13,11 +14,14 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 
 from app.config import settings
 from app.core.agent.tools.builtin.web_search import get_websearch_config
+from app.core.agent.tracing import get_tracer, push_llm_usage
 from app.core.agent.web_search import web_search_structured
 from app.core.llm.chat_model import build_default_chat_model, supports_function_call
 from app.db.postgres import SessionLocal
 from app.repositories.skill_repository import SkillRepository
 from app.services.career_context import assemble_context, compact_catalog, encode, excerpt
+from app.services.career_question_catalog import order_questions, required_skills, skills_in
+from app.services.career_training_harness import learning_candidates
 from app.services.skill_builtins import get_builtin_skill
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,7 @@ class CareerRun(BaseModel):
     context: dict
     trainingCatalog: list[dict] | None = None
     agentContext: dict | None = None
+    practiceLearning: dict | None = None
 
 
 class list_training_questions(BaseModel):
@@ -116,10 +121,44 @@ class CareerSkillUnavailable(Exception):
     """The selected skill is no longer available to this user."""
 
 
-async def execute(run: CareerRun) -> dict:
+class CareerCheckpoints(Protocol):
+    async def checkpoint_context(self, value: dict) -> None: ...
+    async def questions(self) -> list[dict]: ...
+    async def plan(self, plan: dict) -> None: ...
+    async def record_event(self, event: dict) -> None: ...
+
+
+class HttpCareerCheckpoints:
+    def __init__(self, run: CareerRun, client: httpx.AsyncClient):
+        self.path = f"/internal/career/tasks/{run.id}"
+        self.client = client
+
+    async def checkpoint_context(self, value: dict) -> None:
+        (await self.client.put(f"{self.path}/context", json=value)).raise_for_status()
+
+    async def questions(self) -> list[dict]:
+        return (await self.client.put(f"{self.path}/questions")).raise_for_status().json()
+
+    async def plan(self, plan: dict) -> None:
+        (await self.client.put(f"{self.path}/plan", json=plan)).raise_for_status()
+
+    async def record_event(self, event: dict) -> None:
+        (await self.client.post(f"{self.path}/events", json=event)).raise_for_status()
+
+
+@asynccontextmanager
+async def career_checkpoints(run: CareerRun, native: CareerCheckpoints | None = None):
+    if native is not None:
+        yield native
+    else:
+        async with career_client(run) as client:
+            yield HttpCareerCheckpoints(run, client)
+
+
+async def execute(run: CareerRun, native: CareerCheckpoints | None = None) -> dict:
     async with asyncio.timeout(85):
         if run.kind == "DISCOVERY":
-            return await discover(run)
+            return await discover(run, native)
         schema, skill = career_skill(run)
         async with SessionLocal() as session:
             model, config = await build_default_chat_model(
@@ -129,18 +168,21 @@ async def execute(run: CareerRun) -> dict:
         if not supports_function_call(config):
             raise MissingCareerTools()
 
-        async with career_client(run) as client:
-            trace = CareerTrace(run, client)
+        async with career_checkpoints(run, native) as callbacks:
+            trace = CareerTrace(run, callbacks)
             started = perf_counter()
             try:
                 prepared, payload = await assemble_context(run.userId, run.context, run.agentContext, skill)
-                (await client.put(f"{trace.path}/context", json=prepared)).raise_for_status()
+                await callbacks.checkpoint_context(prepared)
             except Exception:
                 await trace.event("assemble_context", "failed", started)
                 raise
             await trace.event("assemble_context", "succeeded", started)
             if run.kind == "TRAINING":
-                await train(run.model_copy(update={"context": payload}), model, trace=trace, skill=prepared["skill"])
+                await train(
+                    run.model_copy(update={"context": payload}), model, trace=trace,
+                    skill=prepared["skill"], native_catalog=native is not None,
+                )
                 return {"status": "UP"}
 
             messages = [
@@ -253,14 +295,14 @@ async def load_career_skill(run: CareerRun, skill: dict, repository: SkillReposi
     return skill
 
 
-async def discover(run: CareerRun) -> dict:
+async def discover(run: CareerRun, native: CareerCheckpoints | None = None) -> dict:
     async with SessionLocal() as session:
         config = await get_websearch_config(session, run.userId)
     if config is None:
         raise MissingCareerSearch()
     job = run.context["job"]
-    async with career_client(run) as client:
-        trace = CareerTrace(run, client)
+    async with career_checkpoints(run, native) as callbacks:
+        trace = CareerTrace(run, callbacks)
         started = perf_counter()
         try:
             results = await web_search_structured(*config, f'{job["company"]} {job["title"]} 面试经验 面经', top_k=8)
@@ -287,43 +329,57 @@ def career_client(run: CareerRun) -> httpx.AsyncClient:
 
 
 class CareerTrace:
-    def __init__(self, run: CareerRun, client: httpx.AsyncClient):
+    def __init__(self, run: CareerRun, callbacks: CareerCheckpoints):
         self.run = run
-        self.client = client
-        self.path = f"/internal/career/tasks/{run.id}"
+        self.callbacks = callbacks
         self.sequence = 0
 
     async def event(self, step: str, outcome: str, started: float, message: AIMessage | None = None):
         self.sequence += 1
         usage = (message.usage_metadata or {}) if message is not None else {}
         try:
-            (await self.client.post(f"{self.path}/events", json={
+            await self.callbacks.record_event({
                 "sequenceNo": self.sequence, "step": step, "outcome": outcome,
                 "elapsedMs": int((perf_counter() - started) * 1000),
                 "inputTokens": usage.get("input_tokens"), "outputTokens": usage.get("output_tokens"),
-            })).raise_for_status()
-        except httpx.HTTPError as error:
+            })
+        except Exception as error:
             logger.warning("Career task %s could not record %s (%s)", self.run.id, step, type(error).__name__)
 
 
-async def train(run: CareerRun, model: ChatOpenAI, trace: CareerTrace | None = None, skill: dict | None = None) -> None:
+async def train(
+    run: CareerRun, model: ChatOpenAI, trace: CareerTrace | None = None, skill: dict | None = None,
+    *, native_catalog: bool = False,
+) -> None:
     instructions = skill_instructions(skill or career_skill(run)[1])
     if trace is None:
-        async with career_client(run) as client:
-            await execute_training(run, model, client, instructions)
+        async with career_checkpoints(run) as callbacks:
+            await execute_training(run, model, callbacks, instructions)
     else:
-        await execute_training(run, model, trace.client, instructions, trace)
+        await execute_training(run, model, trace.callbacks, instructions, trace, native_catalog=native_catalog)
 
 
 async def execute_training(
-    run: CareerRun, model: ChatOpenAI, client: httpx.AsyncClient, instructions: str, trace: CareerTrace | None = None,
+    run: CareerRun, model: ChatOpenAI, callbacks: CareerCheckpoints,
+    instructions: str, trace: CareerTrace | None = None,
+    *, native_catalog: bool = False,
 ):
-    path = f"/internal/career/tasks/{run.id}"
     messages = [
         SystemMessage(content=instructions),
         HumanMessage(content=encode(run.context)),
     ]
     catalog = run.trainingCatalog
+    if catalog is None and native_catalog:
+        started = perf_counter()
+        try:
+            catalog = await callbacks.questions()
+        except Exception:
+            if trace:
+                await trace.event("list_training_questions", "failed", started)
+            raise
+        if trace:
+            await trace.event("list_training_questions", "succeeded", started)
+
     if catalog is None:
         started = perf_counter()
         response = None
@@ -334,7 +390,7 @@ async def execute_training(
             log_model_step(run, "list_training_questions", response, started)
             call = require_tool_call(response, "list_training_questions")
             list_training_questions.model_validate(call["args"])
-            catalog = (await client.put(f"{path}/questions")).raise_for_status().json()
+            catalog = await callbacks.questions()
         except Exception:
             if trace:
                 await trace.event("list_training_questions", "failed", started, response)
@@ -349,14 +405,20 @@ async def execute_training(
         call = response.tool_calls[0]
     if not catalog:
         raise ValueError("No eligible questions")
-    plan = await generate_plan(run, model, messages[0], messages[1], response, call["id"], compact_catalog(catalog), trace)
-    (await client.put(f"{path}/plan", json=plan.model_dump())).raise_for_status()
+    targets = learning_candidates(catalog, run.practiceLearning)
+    ordered = order_questions(catalog, run.context.get("job", {}), run.context.get("preferredQuestion"), targets)
+    plan = await generate_plan(
+        run, model, messages[0], messages[1], response, call["id"], compact_catalog(ordered), trace,
+        practice_targets=targets,
+    )
+    await callbacks.plan(plan.model_dump())
 
 
 async def generate_plan(
     run: CareerRun, model: ChatOpenAI, system: SystemMessage, context: HumanMessage, lookup: AIMessage, call_id: str,
     catalog: list[dict],
     trace: CareerTrace | None = None,
+    *, practice_targets: dict[tuple[str, int], tuple[str, ...]] | None = None,
 ) -> create_training_plan:
     instructions = system.content + (
         "你是求职训练教练。题目目录已经查到。结合 JD 和已确认经历，用中文制定训练计划。"
@@ -364,18 +426,45 @@ async def generate_plan(
         "逐字使用目录中的题目 ID 和版本号，题目不得重复。若题库方向与 JD 不完全吻合，"
         "从目录选最相关的题目，并在岗位分析中说明覆盖缺口。若上下文有 preferredQuestion，"
         "计划必须包含指定 ID 的题目。若有 revisionReview，使用原计划和复盘改进训练，说明调整依据。"
+        "优先覆盖岗位必备技能，覆盖后优先选择与本岗位面试反馈中薄弱点匹配的题。"
         + SOURCE_INSTRUCTIONS
     )
+    required = required_skills(run.context.get("job", {}))
+    if required:
+        available = set().union(*(skills_in(item.get("topic", "")) for item in catalog))
+        instructions += "识别到的必备技能为 " + "、".join(sorted(required)) + "。"
+        missing = required - available
+        if missing:
+            instructions += "目录主题未显式覆盖 " + "、".join(sorted(missing)) + "，请检查并在分析中交代缺口。"
     catalog_json = json.dumps(catalog, ensure_ascii=False)
+    if practice_targets:
+        recommended = {}
+        for entry in catalog:
+            question, version = entry["id"], entry["version"]
+            for skill in practice_targets.get((question, version), ()):
+                recommended.setdefault(skill, {"id": question, "version": version})
+        if recommended:
+            context = HumanMessage(content=context.content + "\n近期客观题练习反映的复习建议（必备技能及指定题优先）\n"
+                                   + encode(recommended))
     allowed = {(entry["id"], entry["version"]) for entry in catalog}
     generator = model.bind_tools([create_training_plan], tool_choice="create_training_plan")
     attempts = (
         [SystemMessage(content=instructions), context, lookup, ToolMessage(content=catalog_json, tool_call_id=call_id)],
         [SystemMessage(content=instructions), context, HumanMessage(content="题目目录：\n" + catalog_json)],
     )
+    feedback = ""
     for messages in attempts:
         started = perf_counter()
-        response = await generator.ainvoke(messages)
+        if feedback:
+            messages = [SystemMessage(content=instructions + "\n上一次提交的校验结果：" + feedback), *messages[1:]]
+        try:
+            async with get_tracer().llm_span("career:create_training_plan", model_name=model.model_name):
+                response = await generator.ainvoke(messages)
+                push_llm_usage(response, model)
+        except Exception:
+            if trace:
+                await trace.event("create_training_plan", "failed", started)
+            raise
         log_model_step(run, "create_training_plan", response, started)
         try:
             plan = create_training_plan.model_validate(require_tool_call(response, "create_training_plan")["args"])
@@ -388,7 +477,9 @@ async def generate_plan(
             if trace:
                 await trace.event("create_training_plan", "succeeded", started, response)
             return plan
-        except (InvalidCareerToolResponse, ValidationError):
+        except (InvalidCareerToolResponse, ValidationError) as error:
+            feedback = (str(error) if isinstance(error, InvalidCareerToolResponse) else
+                        "请按 create_training_plan 的 Schema 提交完整参数，且只调用一次。")
             if trace:
                 await trace.event("create_training_plan", "failed", started, response)
             logger.warning(

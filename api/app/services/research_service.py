@@ -17,6 +17,7 @@ from app.core.exceptions import BizError
 from app.core.llm.chat_model import get_default_chat_config
 from app.core.logging import get_logger
 from app.core.realtime import bus
+from app.db.career import career_transaction
 from app.db.postgres import SessionLocal
 from app.models.research_report_model import (
     RESEARCH_STATUS_DONE,
@@ -26,6 +27,7 @@ from app.models.research_report_model import (
 )
 from app.repositories.research_report_repository import ResearchReportRepository
 from app.schemas.research_schema import CompanyResearchJob, ResearchStartRequest
+from app.services.career_records import CareerRecords
 
 logger = get_logger(__name__)
 
@@ -38,8 +40,14 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-async def _get_company_job(job_id: uuid.UUID, authorization: str) -> CompanyResearchJob:
+async def _get_company_job(
+    job_id: uuid.UUID, authorization: str, user_id: uuid.UUID | None = None,
+) -> CompanyResearchJob:
     try:
+        if settings.career_mysql_host and user_id is not None:
+            async with career_transaction() as connection:
+                job = await CareerRecords(connection, str(user_id)).jobs().get(str(job_id))
+                return CompanyResearchJob.model_validate(job)
         async with httpx.AsyncClient(
             base_url=settings.career_backend_base_url, timeout=8, trust_env=False
         ) as client:
@@ -49,7 +57,7 @@ async def _get_company_job(job_id: uuid.UUID, authorization: str) -> CompanyRese
         if reply.status_code == 404:
             raise BizError("岗位不存在或不可访问，请重新选择岗位。")
         if reply.status_code == 401:
-            raise BizError("求职服务未接受当前登录凭证，请检查 Java 与 Comet 的签名配置。")
+            raise BizError("求职服务未接受当前登录凭证，请重新登录后重试。")
         reply.raise_for_status()
         return CompanyResearchJob.model_validate(reply.json()["data"])
     except (httpx.HTTPError, KeyError, TypeError, ValueError) as e:
@@ -89,7 +97,7 @@ class ResearchService:
         try:
             research_topic = topic
             if body.job_id is not None:
-                job = await _get_company_job(body.job_id, authorization)
+                job = await _get_company_job(body.job_id, authorization, user_id)
                 research_topic = _company_research_prompt(topic, job)
             await get_default_chat_config(self.session, user_id)
             await self._require_websearch(user_id)

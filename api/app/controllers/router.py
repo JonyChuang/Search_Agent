@@ -10,6 +10,17 @@ from app.controllers import (
     agent_persona_controller,
     agent_task_controller,
     auth_controller,
+    career_application_browser_controller,
+    career_content_controller,
+    career_interview_controller,
+    career_judge_controller,
+    career_learning_controller,
+    career_material_controller,
+    career_practice_controller,
+    career_practice_sessions_controller,
+    career_records_controller,
+    career_reminder_controller,
+    career_task_controller,
     chat_controller,
     conversation_share_controller,
     dashboard_controller,
@@ -38,6 +49,17 @@ from app.controllers import (
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health_controller.router)
 api_router.include_router(auth_controller.router)
+api_router.include_router(career_application_browser_controller.router)
+api_router.include_router(career_content_controller.router)
+api_router.include_router(career_interview_controller.router)
+api_router.include_router(career_judge_controller.router)
+api_router.include_router(career_learning_controller.router)
+api_router.include_router(career_material_controller.router)
+api_router.include_router(career_practice_controller.router)
+api_router.include_router(career_practice_sessions_controller.router)
+api_router.include_router(career_records_controller.router)
+api_router.include_router(career_reminder_controller.router)
+api_router.include_router(career_task_controller.router)
 api_router.include_router(model_config_controller.router)
 api_router.include_router(document_controller.router)
 api_router.include_router(image_controller.router)

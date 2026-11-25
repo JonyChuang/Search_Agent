@@ -17,7 +17,8 @@ const taskTypes: { kind: TaskKind; title: string }[] = [
 ]
 
 type Metric = { kind: string; status: string; taskCount: number; recordedSteps: number; stepMilliseconds: number;
-  measuredInputs: number; inputTokens: number; outputTokens: number }
+  measuredInputs: number; inputTokens: number; outputTokens: number;
+  failedSteps?: number; resumedTasks?: number; adaptedPlans?: number }
 
 function TaskMetrics({ jobId }: { jobId?: string }) {
   const load = useCallback(async (signal: AbortSignal) => (await client.get<unknown, { data: Metric[] }>(
@@ -25,13 +26,16 @@ function TaskMetrics({ jobId }: { jobId?: string }) {
   const query = useCareerQuery(load)
   if (query.error) return <Alert type="error" message={query.error} action={<Button onClick={query.retry}>重试</Button>} />
   const items = query.data ?? []
-  const sum = (key: 'taskCount' | 'recordedSteps' | 'inputTokens' | 'outputTokens' | 'measuredInputs') =>
-    items.reduce((total, item) => total + item[key], 0)
+  const sum = (key: Exclude<keyof Metric, 'kind' | 'status'>) =>
+    items.reduce((total, item) => total + (item[key] ?? 0), 0)
   const stateCount = (state: string) => items.filter((item) => item.status === state).reduce((total, item) => total + item.taskCount, 0)
   return query.data ? <Space wrap>
     <Tag>共 {sum('taskCount')} 项</Tag><Tag color="success">完成 {stateCount('SUCCEEDED')}</Tag>
     <Tag color="error">失败 {stateCount('FAILED')}</Tag><Tag>取消 {stateCount('CANCELLED')}</Tag>
     <Tag>记录 {sum('recordedSteps')} 个执行步骤</Tag>
+    {!!sum('failedSteps') && <Tag>失败步骤 {sum('failedSteps')}</Tag>}
+    {!!sum('resumedTasks') && <Tag>从检查点继续 {sum('resumedTasks')} 项</Tag>}
+    {!!sum('adaptedPlans') && <Tag>根据练习反馈安排新题 {sum('adaptedPlans')} 份</Tag>}
     {!!sum('measuredInputs') && <Tag>已计量 Token · 输入 {sum('inputTokens')} / 输出 {sum('outputTokens')}</Tag>}
     <Button size="small" onClick={query.retry}>刷新</Button>
   </Space> : <Typography.Text type="secondary">正在读取运行统计</Typography.Text>

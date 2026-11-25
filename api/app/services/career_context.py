@@ -85,6 +85,7 @@ def prepare_context(raw: dict, saved: dict | None, skill: dict, sources: list[di
     payload.pop("documentIds", None)
     payload.pop("skillId", None)
     payload.pop("preparationId", None)
+    payload.pop("practiceLearning", None)
     if skill.get("selected"):
         payload["skillGuidance"] = skill["selected"]["guidance"]
     feedback = payload.pop("feedback", [])
@@ -146,6 +147,6 @@ def compact_catalog(catalog: list[dict]) -> list[dict]:
         if "prompt" in item:
             item["prompt"] = excerpt(item["prompt"], 180)
         if count_tokens(encode([*compact, item])) > CATALOG_TOKENS:
-            break
+            continue
         compact.append(item)
     return compact

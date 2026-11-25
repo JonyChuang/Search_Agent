@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import httpx
 
+from app.config import settings
 from app.schemas.chat_schema import ChatStreamRequest
 from app.services.career_chat_tools import CareerChatTools, requests_plan
 from app.services.chat_service import ChatService
@@ -34,7 +35,10 @@ class CareerChatToolsTest(IsolatedAsyncioTestCase):
         client = httpx.AsyncClient(base_url="http://java.test", headers={"Authorization": "Bearer fixture"},
                                    transport=httpx.MockTransport(handle))
         body = ChatStreamRequest(message="为当前岗位创建备考计划", career_job_id=job_id, career_plan_request_id=request_id)
-        with patch("app.services.career_chat_tools.httpx.AsyncClient", return_value=client):
+        with (
+            patch.object(settings, "career_mysql_host", ""),
+            patch("app.services.career_chat_tools.httpx.AsyncClient", return_value=client),
+        ):
             service = object.__new__(ChatService)
             events = [event async for event in service._generate_events(uuid4(), None, body, [], [], "Bearer fixture")]
         self.assertEqual(request_count, 1)

@@ -1,0 +1,263 @@
+"""Durable career task state shared with the existing MySQL queue."""
+
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from datetime import timezone
+from uuid import uuid4
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from app.core.exceptions import BizError
+
+PUBLIC_KINDS = {"TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"}
+FENCE = """
+    id = :id AND generation = :generation AND lease_token = :lease
+    AND status = 'RUNNING' AND lease_until > CURRENT_TIMESTAMP(6)
+"""
+TASK_JSON = (
+    "request_json", "context_json", "result_json", "training_catalog_json",
+    "training_draft_json", "agent_context_json",
+)
+
+
+def conflict(message: str):
+    return BizError(message, code=409, status_code=409)
+
+
+def view(row: dict) -> dict:
+    result = deepcopy(row["result_json"])
+    if result and "openQuestions" in result:
+        for question in result["openQuestions"]:
+            question.pop("rubric", None)
+            question.pop("referenceAnswer", None)
+    context = row["context_json"]
+    kind, status = row["kind"], row["status"]
+    interview = None
+    if kind == "INTERVIEW":
+        question = context.get("question") or {}
+        interview = {
+            "prompt": question.get("prompt") or "",
+            "gradingVersion": question.get("gradingVersion") or 0,
+            "sourceUrl": str(question.get("sourceUrl") or ""),
+            "answer": context.get("answer") or "",
+        }
+        if status == "SUCCEEDED" and question.get("kind") == "OPEN":
+            interview["rubric"] = question.get("rubric")
+            if question.get("referenceAnswer") is not None:
+                interview["referenceAnswer"] = question["referenceAnswer"]
+    step = None
+    if kind == "TRAINING":
+        if status == "SUCCEEDED":
+            step = "COMPLETE"
+        elif row["training_draft_json"] is not None:
+            step = "SAVE_PLAN"
+        elif row["training_catalog_json"] is not None:
+            step = "GENERATE_PLAN"
+        else:
+            step = "FIND_QUESTIONS"
+    return {
+        "id": row["id"], "kind": kind, "status": status, "request": row["request_json"],
+        "job": (context.get("job") or {}).get("label", ""), "interview": interview,
+        "result": result, "error": row["error_message"], "generation": row["generation"],
+        "trainingStep": step, "references": (row["agent_context_json"] or {}).get("references"),
+        "createdAt": row["created_at"].replace(tzinfo=timezone.utc),
+        "updatedAt": row["updated_at"].replace(tzinfo=timezone.utc),
+    }
+
+
+def _decode(row) -> dict:
+    decoded = dict(row)
+    for field in TASK_JSON:
+        if decoded[field] is not None:
+            decoded[field] = json.loads(decoded[field])
+    return decoded
+
+
+class CareerQueue:
+    def __init__(self, db: AsyncConnection):
+        self.db = db
+
+    async def _run(self, sql: str, **params):
+        return await self.db.execute(text(sql), params)
+
+    async def _one(self, where: str, **params) -> dict | None:
+        row = (await self._run(f"SELECT * FROM career_task WHERE {where}", **params)).mappings().one_or_none()
+        return _decode(row) if row is not None else None
+
+    async def _lock_scheduler(self) -> None:
+        (await self._run("SELECT id FROM career_task_scheduler WHERE id = 1 FOR UPDATE")).scalar_one()
+
+    async def _check_queue(self, user: str) -> None:
+        row = (await self._run("""
+            SELECT COUNT(*) AS total, COALESCE(SUM(user_id = :user), 0) AS own
+            FROM career_task WHERE status = 'QUEUED'
+        """, user=user)).one()
+        if row.total >= 200 or row.own >= 20:
+            raise BizError("待处理任务已满，请等部分任务完成后再试", code=429, status_code=429)
+
+    async def owned(self, user: str, task_id: str, *, public=True) -> dict:
+        row = await self._one("user_id = :user AND id = :id", user=user, id=task_id)
+        if row is None or (public and row["kind"] not in PUBLIC_KINDS):
+            raise BizError("任务不存在", code=404, status_code=404)
+        return row
+
+    async def by_request(
+        self, user: str, kind: str, request: dict, request_id: str | None = None,
+    ) -> dict | None:
+        existing = await self.lookup_request(user, request_id or request["requestId"])
+        if existing and (existing["kind"] != kind or existing["request_json"] != request):
+            raise conflict("请求编号已用于另一项任务")
+        return existing
+
+    async def lookup_request(self, user: str, request_id: str) -> dict | None:
+        return await self._one("user_id = :user AND request_id = :request_id", user=user, request_id=request_id)
+
+    async def insert(
+        self, user: str, kind: str, job_id: str, request: dict, context: dict,
+        *, request_id: str | None = None,
+    ) -> dict:
+        request_id = request_id or request["requestId"]
+        await self._lock_scheduler()
+        existing = await self.by_request(user, kind, request, request_id)
+        if existing:
+            return existing
+        await self._check_queue(user)
+        task_id = str(uuid4())
+        await self._run("""
+            INSERT INTO career_task (id, user_id, request_id, kind, job_id, request_json, context_json)
+            VALUES (:id, :user, :request_id, :kind, :job, :request, :context)
+        """, id=task_id, user=user, request_id=request_id, kind=kind, job=job_id,
+            request=json.dumps(request, ensure_ascii=False), context=json.dumps(context, ensure_ascii=False))
+        return await self.owned(user, task_id, public=False)
+
+    async def list(self, user: str, kind: str, job_id: str | None, content: str | None, page: int) -> dict:
+        rows = await self._run("""
+            SELECT * FROM career_task WHERE user_id = :user AND kind = :kind
+              AND (:job IS NULL OR job_id = :job)
+              AND (:content IS NULL OR (:content = 'notes') = (COALESCE(request_json->>'$.purpose', '') = 'NOTES'))
+            ORDER BY created_at DESC, id DESC LIMIT 21 OFFSET :offset
+        """, user=user, kind=kind, job=job_id, content=content, offset=(page - 1) * 20)
+        items = [view(_decode(row)) for row in rows.mappings()]
+        return {"items": items[:20], "hasMore": len(items) > 20}
+
+    async def events(self, user: str, task_id: str) -> list[dict]:
+        await self.owned(user, task_id)
+        rows = await self._run("""
+            SELECT generation, sequence_no AS sequenceNo, step, outcome, elapsed_ms AS elapsedMs,
+                input_tokens AS inputTokens, output_tokens AS outputTokens, created_at AS createdAt
+            FROM career_task_event WHERE task_id = :id
+            ORDER BY generation DESC, sequence_no DESC LIMIT 100
+        """, id=task_id)
+        return [dict(row, createdAt=row["createdAt"].replace(tzinfo=timezone.utc)) for row in rows.mappings()]
+
+    async def retry(self, user: str, task_id: str, *, public: bool = True) -> dict:
+        await self._lock_scheduler()
+        row = await self.owned(user, task_id, public=public)
+        if row["status"] == "FAILED":
+            await self._check_queue(user)
+            await self._run("""
+                UPDATE career_task SET status = 'QUEUED', error_message = NULL, queued_at = CURRENT_TIMESTAMP(6)
+                WHERE user_id = :user AND id = :id AND status = 'FAILED'
+            """, user=user, id=task_id)
+            row = await self.owned(user, task_id, public=public)
+        return row
+
+    async def change_state(
+        self, user: str, task_id: str, action: str, status: str, generation: int,
+    ) -> dict:
+        target, allowed = {
+            "PAUSE": ("WAITING_USER", {"QUEUED", "RUNNING"}),
+            "RESUME": ("QUEUED", {"WAITING_USER"}),
+            "CANCEL": ("CANCELLED", {"QUEUED", "RUNNING", "WAITING_USER", "FAILED"}),
+        }[action]
+        row = await self.owned(user, task_id)
+        if row["status"] == target and row["generation"] == generation:
+            return row
+        if row["status"] != status or status not in allowed:
+            raise conflict("任务状态已变化，请刷新后重试")
+        changed = await self._run("""
+            UPDATE career_task SET status = :target, lease_token = NULL, lease_until = NULL,
+                queued_at = IF(:target = 'QUEUED', CURRENT_TIMESTAMP(6), queued_at)
+            WHERE user_id = :user AND id = :id AND status = :status AND generation = :generation
+              AND (:target = 'QUEUED' OR kind <> 'TRAINING' OR training_draft_json IS NULL)
+        """, target=target, user=user, id=task_id, status=status, generation=generation)
+        if changed.rowcount != 1:
+            raise conflict("任务状态已变化，请刷新后重试")
+        return await self.owned(user, task_id)
+
+    async def claim(self, kinds: tuple[str, ...]) -> dict | None:
+        if not kinds:
+            return None
+        await self._lock_scheduler()
+        filters = ", ".join(f":kind{i}" for i in range(len(kinds)))
+        params = {f"kind{i}": kind for i, kind in enumerate(kinds)}
+        task_id = (await self._run(f"""
+            SELECT t.id FROM career_task t
+            WHERE t.kind IN ({filters})
+              AND (t.status = 'QUEUED' OR (t.status = 'RUNNING' AND t.lease_until <= CURRENT_TIMESTAMP(6)))
+              AND (SELECT COUNT(*) FROM career_task r WHERE r.status = 'RUNNING'
+                   AND r.lease_until > CURRENT_TIMESTAMP(6)) < 4
+              AND (SELECT COUNT(*) FROM career_task r WHERE r.status = 'RUNNING'
+                   AND r.lease_until > CURRENT_TIMESTAMP(6) AND r.user_id = t.user_id) < 2
+              AND NOT EXISTS (SELECT 1 FROM career_task r
+                   WHERE r.user_id = t.user_id AND r.job_id <=> t.job_id AND r.id <> t.id
+                     AND ((r.status = 'RUNNING' AND r.lease_until > CURRENT_TIMESTAMP(6))
+                       OR (r.status IN ('RUNNING', 'QUEUED') AND (r.queued_at, r.id) < (t.queued_at, t.id))))
+            ORDER BY t.queued_at, t.id LIMIT 1 FOR UPDATE SKIP LOCKED
+        """, **params)).scalar_one_or_none()
+        if task_id is None:
+            return None
+        await self._run("""
+            UPDATE career_task SET status = 'RUNNING', generation = generation + 1,
+                lease_token = :lease, lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND)
+            WHERE id = :id
+        """, id=task_id, lease=str(uuid4()))
+        return await self._one("id = :id", id=task_id)
+
+    @staticmethod
+    def lease(row: dict) -> dict:
+        return {"id": row["id"], "generation": row["generation"], "lease": row["lease_token"]}
+
+    async def active(self, row: dict) -> dict:
+        result = await self._one(FENCE, **self.lease(row))
+        if result is None:
+            raise conflict("任务执行代次已失效")
+        return result
+
+    async def checkpoint(self, row: dict, column: str, value) -> dict:
+        suffix = {
+            "agent_context_json": "",
+            "training_catalog_json": ", training_catalog_at = CURRENT_TIMESTAMP(6)",
+            "training_draft_json": ", training_draft_at = CURRENT_TIMESTAMP(6)",
+        }[column]
+        extra = "AND training_catalog_json IS NOT NULL" if column == "training_draft_json" else ""
+        await self._run(f"""
+            UPDATE career_task SET {column} = :value {suffix}
+            WHERE {FENCE} AND {column} IS NULL {extra}
+        """, value=json.dumps(value, ensure_ascii=False), **self.lease(row))
+        saved = (await self.active(row))[column]
+        if saved != value:
+            raise conflict("任务检查点已保存或前置阶段尚未完成")
+        return saved
+
+    async def record_event(self, row: dict, event: dict) -> None:
+        await self._run(f"""
+            INSERT INTO career_task_event (task_id, generation, sequence_no, step, outcome,
+                                                elapsed_ms, input_tokens, output_tokens)
+            SELECT id, generation, :sequenceNo, :step, :outcome, :elapsedMs, :inputTokens, :outputTokens
+            FROM career_task WHERE {FENCE}
+            ON DUPLICATE KEY UPDATE sequence_no = career_task_event.sequence_no
+        """, **self.lease(row), **event)
+        await self.active(row)
+
+    async def finish(self, row: dict, result: dict | None, error: str | None) -> bool:
+        changed = await self._run(f"""
+            UPDATE career_task SET status = :status, result_json = :result, error_message = :error,
+                lease_token = NULL, lease_until = NULL
+            WHERE {FENCE}
+        """, status="FAILED" if error else "SUCCEEDED", error=error,
+            result=json.dumps(result, ensure_ascii=False) if result is not None else None, **self.lease(row))
+        return changed.rowcount == 1

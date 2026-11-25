@@ -16,7 +16,7 @@ import ast
 import json
 import re
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 
 MAX_TOOL_ITERATIONS = 5
 MAX_TOOL_RESULT_PREVIEW = 600
+_BUDGET_EXCEEDED = "当前上下文已达到模型预算，请缩短输入或减少附带资料后重试。"
 
 
 def _format_observation(observation: object) -> str:
@@ -102,6 +103,7 @@ async def run_function_calling(
     tools: list[StructuredTool],
     messages: list,
     stats_holder: dict[str, dict] | None = None,
+    *, fit_round: Callable[[list, int], list | None] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """强模型路径：原生 function calling 流式工具循环。"""
     tool_map = {t.name: t for t in tools}
@@ -115,7 +117,13 @@ async def run_function_calling(
     chat_model_name = getattr(model, "model_name", None) or getattr(model, "model", "chat")
     tracer = get_tracer()
 
+    turn_index = len(messages) - 1
     for iteration in range(MAX_TOOL_ITERATIONS):
+        fitted = fit_round(messages, turn_index) if fit_round else messages
+        if fitted is None:
+            yield {"type": "token", "text": _BUDGET_EXCEEDED}
+            yield {"type": "final", "text": full_text + _BUDGET_EXCEEDED}
+            return
         # 每轮 LLM 流式调用包一个 llm_call span,流完后从 usage_metadata 抽 token
         # 抓最后一条 user/tool 消息做请求摘要
         last_msg_text = ""
@@ -132,12 +140,12 @@ async def run_function_calling(
                 "comet.chat.tools_bound": len(tools),
             },
         ) as lsp:
-            lsp.set_payload("messages_count", len(messages))
+            lsp.set_payload("messages_count", len(fitted))
             if last_msg_text:
                 lsp.set_payload("request_summary", last_msg_text[:600])
             gathered = None
             iter_text = ""
-            async for chunk in model_with_tools.astream(messages):
+            async for chunk in model_with_tools.astream(fitted):
                 if chunk.content:
                     text = chunk.content if isinstance(chunk.content, str) else str(chunk.content)
                     full_text += text
@@ -261,6 +269,7 @@ async def run_react(
     history: list,
     system_prompt: str,
     stats_holder: dict[str, dict] | None = None,
+    *, fit_round: Callable[[list, int], list | None] | None = None,
 ) -> AsyncGenerator[dict, None]:
     """弱模型路径：prompt 模拟 ReAct，手动解析并调用工具。"""
     tool_map = {t.name: t for t in tools}
@@ -277,7 +286,13 @@ async def run_react(
     react_model_name = getattr(model, "model_name", None) or getattr(model, "model", "chat")
     tracer = get_tracer()
 
+    turn_index = len(convo) - 1
     for iteration in range(MAX_TOOL_ITERATIONS):
+        fitted = fit_round(convo, turn_index) if fit_round else convo
+        if fitted is None:
+            yield {"type": "token", "text": _BUDGET_EXCEEDED}
+            yield {"type": "final", "text": _BUDGET_EXCEEDED}
+            return
         async with tracer.llm_span(
             f"chat(ReAct):{react_model_name} (轮 {iteration + 1})",
             model_name=react_model_name,
@@ -286,7 +301,7 @@ async def run_react(
                 "comet.chat.mode": "react",
             },
         ) as lsp:
-            resp = await model.ainvoke(convo)
+            resp = await model.ainvoke(fitted)
             usage = getattr(resp, "usage_metadata", None) or {}
             in_t = int(usage.get("input_tokens", 0) or 0)
             out_t = int(usage.get("output_tokens", 0) or 0)
@@ -347,7 +362,8 @@ async def run_react(
                 },
             ) as tsp:
                 try:
-                    observation = await tool.ainvoke({"query": query})
+                    # ReAct supplies a search string. Read-only zero-argument tools accept an empty object.
+                    observation = await tool.ainvoke({"query": query} if tool.args else {})
                 except Exception as e:
                     observation = f"工具执行失败：{e}"
                     status = "error"

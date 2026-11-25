@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.llm.resolver import get_client_for_type, get_optional_client_for_type
 from app.core.logging import get_logger
-from app.core.rag.es_index import CHUNK_TYPE_CHILD, CHUNK_TYPE_IMAGE, CHUNKS_INDEX
+from app.core.rag.es_index import CHUNK_TYPE_CHILD, CHUNK_TYPE_IMAGE, CHUNK_TYPE_PARENT, CHUNKS_INDEX
 from app.db.elastic import get_es
 
 logger = get_logger(__name__)
@@ -50,6 +50,8 @@ async def hybrid_search(
     min_vector_score 不为 None 时启用「绝对相关度门控」（精确导向，用于全局搜索）：
     只保留 BM25 命中 或 向量原始余弦得分 ≥ 阈值的结果，丢弃不相关的最近邻噪声。
     """
+    if top_k <= 0 or recall_size <= 0 or kb_ids == []:
+        return []
     es = get_es()
     uid = str(user_id)
 
@@ -133,23 +135,8 @@ async def hybrid_search(
         if not kept:
             return []
         ranked = sorted(kept.items(), key=lambda x: x[1], reverse=True)
-        candidate_ids = [cid for cid, _ in ranked[:top_k]]
-        results: list[dict] = []
-        for cid in candidate_ids:
-            src = hits[cid]
-            content = await _resolve_parent_content(es, uid, src)
-            results.append(
-                {
-                    "chunk_id": cid,
-                    "content": content,
-                    "doc_name": src.get("doc_name"),
-                    "source_id": src.get("source_id"),
-                    "source_type": src.get("source_type"),
-                    "kb_id": src.get("kb_id"),
-                    "score": round(kept[cid], 4),
-                }
-            )
-        return results
+        candidate_ids = [cid for cid, _ in ranked]
+        return await _collect_results(es, uid, hits, candidate_ids, kept, top_k)
 
     ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
     candidate_ids = [cid for cid, _ in ranked[: max(top_k, recall_size)]]
@@ -159,50 +146,60 @@ async def hybrid_search(
     if rerank_client and candidate_ids:
         docs = [hits[cid]["content"] for cid in candidate_ids]
         try:
-            reranked = await rerank_client.rerank(query, docs, top_n=top_k)
-            candidate_ids = [candidate_ids[idx] for idx, _ in reranked]
+            reranked = await rerank_client.rerank(query, docs, top_n=len(candidate_ids))
+            reranked_ids = [
+                candidate_ids[idx] for idx, _ in reranked if 0 <= idx < len(candidate_ids)
+            ]
+            candidate_ids = list(dict.fromkeys([*reranked_ids, *candidate_ids]))
         except Exception as e:
             logger.warning("rerank 失败，回退加权融合排序: %s", e)
 
     # 5. 取 top_k，返回父块内容（small-to-big）
+    return await _collect_results(es, uid, hits, candidate_ids, fused, top_k)
+
+
+async def _collect_results(
+    es, user_id: str, hits: dict[str, dict], candidate_ids: list[str],
+    scores: dict[str, float], top_k: int,
+) -> list[dict]:
+    parent_ids = {hits[cid]["parent_id"] for cid in candidate_ids if hits[cid].get("parent_id")}
+    parents = {}
+    if parent_ids:
+        resp = await es.search(
+            index=CHUNKS_INDEX,
+            body={
+                "size": len(parent_ids),
+                "query": {"bool": {"filter": [
+                    {"term": {"user_id": user_id}},
+                    {"term": {"chunk_type": CHUNK_TYPE_PARENT}},
+                    {"terms": {"chunk_id": sorted(parent_ids)}},
+                ]}},
+            },
+        )
+        parents = {hit["_source"]["chunk_id"]: hit["_source"] for hit in resp["hits"]["hits"]}
+
     results: list[dict] = []
-    for cid in candidate_ids[:top_k]:
+    seen = set()
+    for cid in candidate_ids:
         src = hits[cid]
-        content = await _resolve_parent_content(es, uid, src)
+        parent = parents.get(src.get("parent_id"))
+        if parent and any(parent.get(key) != src.get(key) for key in ("source_id", "kb_id")):
+            parent = None
+        result_key = ("parent", parent["chunk_id"]) if parent else ("chunk", cid)
+        if result_key in seen:
+            continue
+        seen.add(result_key)
         results.append(
             {
                 "chunk_id": cid,
-                "content": content,
+                "content": (parent or src).get("content", ""),
                 "doc_name": src.get("doc_name"),
                 "source_id": src.get("source_id"),
                 "source_type": src.get("source_type"),
                 "kb_id": src.get("kb_id"),
-                "score": round(fused.get(cid, 0.0), 4),
+                "score": round(scores[cid], 4),
             }
         )
+        if len(results) == top_k:
+            break
     return results
-
-
-async def _resolve_parent_content(es, user_id: str, child_src: dict) -> str:
-    """命中子块时取其父块内容，提供更大上下文；取不到则用子块本身。"""
-    parent_id = child_src.get("parent_id")
-    if not parent_id:
-        return child_src.get("content", "")
-    resp = await es.search(
-        index=CHUNKS_INDEX,
-        body={
-            "size": 1,
-            "query": {
-                "bool": {
-                    "filter": [
-                        {"term": {"user_id": user_id}},
-                        {"term": {"chunk_id": parent_id}},
-                    ]
-                }
-            },
-        },
-    )
-    docs = resp["hits"]["hits"]
-    if docs:
-        return docs[0]["_source"].get("content", "")
-    return child_src.get("content", "")

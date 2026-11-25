@@ -12,6 +12,7 @@ import uuid
 from app.config import settings
 from app.core.llm.client import LLMClient
 from app.core.logging import get_logger
+from app.core.memory.retrieval.embedding_cache import recall_embedding
 from app.core.memory.retrieval.searcher import search_memory
 from app.repositories.neo4j.memory_graph_repository import MemoryGraphRepository
 
@@ -60,7 +61,7 @@ async def _do_recall(
     uid = str(user_id)
     # 1. query 只 embed 一次，洞察与实体召回复用
     try:
-        qvec = await embed_client.embed_one(query)
+        qvec = await recall_embedding(embed_client, user_id, query)
     except Exception as e:
         logger.warning("主动召回-向量化失败（忽略）: %s", e)
         return ""

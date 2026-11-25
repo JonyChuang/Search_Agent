@@ -20,15 +20,15 @@ Search Agent 是面向研究生实习与校招的求职工作台。它以目标�
 
 | 功能与入口 | 能做什么 | 实现方式 |
 | --- | --- | --- |
-| **求职总览与求职助手** | 选择当前岗位，查看备考或投递进度。可在对话中创建备考计划、文字模拟面试、简历草稿或网申草稿。 | React 工作台、FastAPI SSE 流式对话、岗位范围内的工具调用、Spring Boot 业务接口。 |
-| **岗位与公司** | 管理目标岗位、JD、技能要求、招聘来源和备考偏好，开展公司调研并查看本岗位任务。 | Spring Boot + MySQL 保存岗位及来源。Python Agent 按公司与岗位组织联网检索，保留面经来源及时间。 |
-| **备考计划** | 根据 JD、确认经历、选定资料和既有练习生成计划，复盘后可生成新版本并回看上一版。 | LangChain Function Calling 完成候选题查询和计划生成。Java 校验题目版本，MySQL 保存任务、结果与检查点。 |
-| **面经、题库与组题练习** | 浏览公开面经与私有学习笔记，按岗位、主题或题型组题，支持 AI 出题、客观题判分、开放题点评、错题复做和练习续做。 | Java 服务端判分，MySQL 持久化作答及题目、评分规则版本。Python 根据选定资料出题。公开内容经审核后发布。 |
-| **编程与 SQL 判题** | 提交代码或 SQL，查看状态与通过用例数。 | Java 调用 Judge0 兼容接口，可接独立 Judge0 CE 或本地禁网 Docker 执行器。本地 SQL 用临时 SQLite 数据库检查查询结果。 |
-| **多轮模拟面试** | 按岗位进行文字或语音面试，也可开启本地摄像头自览。支持动态追问、未完成续做、逐题复盘与后续复习建议。 | Java 事务保存作答和点评任务，后台推进轮次。Python 按评分规则生成反馈。浏览器提供摄像头自览、语音合成及浏览器或已配置服务的语音转写。 |
-| **简历制作** | 编辑个人资料和经历、切换模板，保存通用或岗位简历版本，通过浏览器打印为 PDF。 | React 模板与打印样式，Java/MySQL 保存资料版本和已确认经历的事实快照。 |
-| **网申助手与投递看板** | 准备表单及材料，记录投递阶段和回执。Greenhouse 扩展辅助填写姓名、联系方式和简历，提交由用户核对并确认。 | Java 校验材料版本并保存投递历史，Chrome/Edge Manifest V3 扩展在获授权的招聘页面填表和读取回执。 |
-| **计划与提醒** | 关联岗位设置复习、面试和投递截止提醒，可按已配置渠道发送站外通知。 | MySQL 存储提醒和送达状态，Spring 定时调度，Python 负责通知投递。 |
+| **求职总览与求职助手** | 选择当前岗位，查看备考或投递进度。可在对话中创建备考计划、文字模拟面试、简历草稿或网申草稿。 | React 工作台、FastAPI SSE 流式对话、岗位范围内的工具调用和 FastAPI 业务接口。 |
+| **岗位与公司** | 管理目标岗位、JD、技能要求、招聘来源和备考偏好，开展公司调研并查看本岗位任务。 | FastAPI + MySQL 保存岗位及来源。Python Agent 按公司与岗位组织联网检索，保留面经来源及时间。 |
+| **备考计划** | 根据 JD、确认经历、选定资料和既有练习生成计划，复盘后可生成新版本并回看上一版。 | LangChain Function Calling 完成候选题查询和计划生成。Python 校验题目版本，MySQL 保存任务、结果与检查点。 |
+| **面经、题库与组题练习** | 浏览公开面经与私有学习笔记，按岗位、主题或题型组题，支持 AI 出题、客观题判分、开放题点评、错题复做和练习续做。 | Python 服务端判分，MySQL 持久化作答及题目、评分规则版本。Python 根据选定资料出题。公开内容经审核后发布。 |
+| **编程与 SQL 判题** | 提交代码或 SQL，查看状态与通过用例数。 | Python 调用 Judge0 兼容接口，可接独立 Judge0 CE 或本地禁网 Docker 执行器。本地 SQL 用临时 SQLite 数据库检查查询结果。 |
+| **多轮模拟面试** | 按岗位进行文字或语音面试，也可开启本地摄像头自览。支持动态追问、未完成续做、逐题复盘与后续复习建议。 | MySQL 事务保存作答和点评任务，后台推进轮次。Python 按评分规则生成反馈。浏览器提供摄像头自览、语音合成及浏览器或已配置服务的语音转写。 |
+| **简历制作** | 编辑个人资料和经历、切换模板，保存通用或岗位简历版本，通过浏览器打印为 PDF。 | React 模板与打印样式，MySQL 保存资料版本和已确认经历的事实快照。 |
+| **网申助手与投递看板** | 准备表单及材料，记录投递阶段和回执。Greenhouse 扩展辅助填写姓名、联系方式和简历，提交由用户核对并确认。 | Python 校验材料版本并保存投递历史，Chrome/Edge Manifest V3 扩展在获授权的招聘页面填表和读取回执。 |
+| **计划与提醒** | 关联岗位设置复习、面试和投递截止提醒，可按已配置渠道发送站外通知。 | MySQL 存储提醒和送达状态，Python 调度和投递通知。 |
 
 ### 资料、记忆与 Agent 工作区
 
@@ -36,7 +36,7 @@ Search Agent 是面向研究生实习与校招的求职工作台。它以目标�
 | --- | --- | --- |
 | **我的资料与知识库问答** | 按库管理 PDF、Word、Markdown、文本、HTML、网页及图片，在问答中回查来源。备考时可选个人资料并查看原文引用。 | Celery 异步解析与索引。Elasticsearch 使用父子分块、IK 分词、向量 kNN 与 BM25 融合，支持可选 Rerank。岗位备考从选定文件提取相关段落并校验原文版本。 |
 | **图文、语音与角色群聊** | 携带图片和文档提问，输入语音，或让同一角色组的角色参与对话。也可查看上传图片的描述和标签。 | 多模态模型理解图片，浏览器或已配置的 ASR 服务转写语音，Python 调度角色发言并以 SSE 返回内容。 |
-| **求职记忆与知识图谱** | 管理确认经历和岗位备考偏好，查看历史作答及面试复盘。对话记忆支持图谱浏览、检索和纠正。 | Java/MySQL 管理岗位级记忆与事实版本，Python 按 Token 预算装配带原消息 ID 的历史约束。记忆抽取、关系与来源使用 Celery、Embedding 和 Neo4j。 |
+| **求职记忆与知识图谱** | 管理确认经历和岗位备考偏好，查看历史作答及面试复盘。对话记忆支持图谱浏览、检索和纠正。 | MySQL 管理岗位级记忆与事实版本，Python 按 Token 预算装配带原消息 ID 的历史约束。记忆抽取、关系与来源使用 Celery、Embedding 和 Neo4j。 |
 | **全局搜索与收藏** | 按文档、图片和记忆查找资料，收藏常用内容。 | Elasticsearch 检索文档与图片描述，Neo4j 检索记忆，PostgreSQL 保存收藏记录。 |
 | **任务中心** | 查看备考任务进度、执行步骤、耗时和 Token，暂停、继续或取消任务。 | MySQL 任务队列、执行租约、阶段检查点与任务事件。Redis 租约限制同会话对话并发。 |
 | **研究、定时任务与分享** | 对一个主题收集资料并生成带引用的报告，配置定时执行和通知，查看运行历史。支持对话及研究报告分享、报告导出 Word。 | Python 分阶段编排检索、提炼和写作，可配置审稿模型。Celery Beat 与 Redis 调度，PostgreSQL 保存报告与分享记录，python-docx 生成 Word 文件。 |
@@ -50,7 +50,7 @@ Search Agent 是面向研究生实习与校招的求职工作台。它以目标�
 | **模型配置** | 配置对话、多模态、Embedding、Rerank、联网搜索、ASR 或审稿模型。 | FastAPI 模型配置与客户端工厂，LangChain 与 HTTPX 调用模型，Fernet 加密保存模型密钥。 |
 | **角色与工具配置** | 管理角色卡和角色组，配置知识库、记忆、联网等工具及 MCP 连接。 | LangChain 工具注册与编排，普通对话支持 Function Calling 和 ReAct 两种执行路径，MCP 通过 LangChain 适配器连接。 |
 | **技能中心** | 使用求职模板，支持 ZIP 或公开 GitHub 仓库固定提交导入，并管理版本、更新、回退与卸载。 | 以 `manifest.yaml` 与 `SKILL.md` 描述技能。FastAPI 校验包结构和声明的只读工具，PostgreSQL 保存版本，Python 按任务加载已启用的技能。 |
-| **消息推送** | 配置 Server 酱、企业微信、钉钉或通用 Webhook，用于任务结果和求职提醒。 | Python 通知适配器调用已启用的渠道，Java 或 Celery 按任务类型触发。 |
+| **消息推送** | 配置 Server 酱、企业微信、钉钉或通用 Webhook，用于任务结果和求职提醒。 | Python 通知适配器调用已启用的渠道，FastAPI 或 Celery 按任务类型触发。 |
 
 [功能入口、判题执行器、Greenhouse 扩展与 Skill 包格式](docs/career-agent-release.md)
 
@@ -59,40 +59,37 @@ Search Agent 是面向研究生实习与校招的求职工作台。它以目标�
 | 层级 | 组件与用途 |
 | --- | --- |
 | Web 前端 | React 18、TypeScript、Vite 6、React Router、Ant Design 5。Zustand 管理客户端状态，Axios 调用 API，ECharts 和 AntV X6 用于统计和图谱。 |
-| Java 业务后端 | Java 21、Spring Boot 3.5.16、Spring Security OAuth2 Resource Server、Spring MVC、MyBatis-Plus、JdbcClient。MySQL 8.4 与 Flyway 负责业务持久化和迁移，Maven Wrapper 负责构建。 |
-| Python Agent 服务 | Python 3.12、FastAPI、Uvicorn、Pydantic、LangChain、HTTPX、tiktoken，使用 uv 锁定依赖。处理对话、工具编排、任务推理、上下文预算和技能加载。 |
+| 求职业务与任务 | Python 3.12、FastAPI、SQLAlchemy Async、aiomysql、MySQL 8.4。Python 迁移命令兼容原 Flyway 迁移历史。 |
+| 模型与 Agent | Python 3.12、FastAPI、Uvicorn、Pydantic、LangChain、HTTPX、tiktoken，使用 uv 锁定依赖。处理对话、工具编排、任务推理、上下文预算和技能加载。 |
 | 账号、配置与对话数据 | PostgreSQL 16、SQLAlchemy 2.0 Async、asyncpg、Alembic。存储账号、模型配置、对话、文档元数据及技能版本。 |
 | 知识库检索与文件 | Elasticsearch 8.17 + IK、Embedding、可选 Rerank。PyMuPDF、python-docx、Beautiful Soup 和 Trafilatura 负责文本或网页提取，原文件可保存在本地或 OSS。 |
 | 记忆与异步任务 | Neo4j 5.26 用于图谱记忆。Redis 7 支持对话租约、流式事件和 Celery 队列，Celery Worker 与 Beat 执行资料处理和定时任务。 |
-| 安全与服务联通 | JWT 登录与验签，Fernet 加密模型密钥，Java 与 Python 通过 HTTP 及内部令牌交换任务，业务接口按账号校验数据归属。 |
+| 安全与服务联通 | JWT 登录与验签，Fernet 加密模型密钥，页面与 Agent 工具共用 Python 业务服务，并按登录账号和岗位校验数据归属。 |
 | 扩展与部署 | Judge0 兼容判题服务、SQLite、Chrome/Edge Manifest V3 扩展。Docker Compose 启动存储与容器服务，Nginx 提供静态站点和反向代理。 |
 
 ## 系统架构
 
 ```mermaid
-flowchart LR
-    UI["React / TypeScript"] -->|"/api/career"| Java["Spring Boot / Java 21"]
-    UI -->|"登录、对话、资料与技能"| Agent["FastAPI / Python 3.12"]
-    Java -->|"派发任务"| Agent
-    Agent -->|"业务工具与任务回写"| Java
-    Java --> DB["MySQL / Flyway"]
-    Agent --> Store["PostgreSQL / Alembic"]
-    Agent --> Search["Elasticsearch"]
-    Agent --> Queue["Redis / 消息队列"]
-    Queue --> Workers["Celery Worker / Beat"]
-    Agent --> Graph["Neo4j"]
+flowchart TD
+    UI["React / TypeScript"] --> API["FastAPI / Python 3.12"]
+    API -->|求职业务与任务租约| Career["MySQL 8.4"]
+    API -->|账号、对话与模型配置| Data["PostgreSQL / Alembic"]
+    API -->|知识库召回与记忆读取| Retrieval["Elasticsearch / Neo4j"]
+    API -->|流式续传与后台队列| Redis["Redis"]
+    Redis --> Workers["Celery Worker / Beat"]
 ```
 
-- **Java 业务服务**负责鉴权、岗位和材料、任务调度及业务状态。MySQL 短事务原子认领任务，通过租约、执行代次和幂等键处理过期回写与重复请求。
-- **Python Agent**负责模型调用、Function Calling、上下文预算、Skill 加载和资料检索。训练任务持久化题目目录与计划草稿，可从检查点恢复。知识库使用父子分块、向量与 BM25 混合召回，并支持可选重排。
-- **React 前端**提供求职工作台、流式对话、文档预览和任务状态。页面与 Agent 共用 Java 业务接口及权限规则。
+- FastAPI 提供业务接口与 Agent 工具执行入口。MySQL 短事务原子认领任务，通过执行代次、租约和幂等键处理重复请求及过期回写。
+- 训练任务分别保存题目目录和计划草稿，重启后从已保存的检查点恢复。知识库结合父子分块、向量及 BM25 召回，支持可选重排。
+- React 提供求职工作台、流式对话、文档预览和任务状态。页面与 Agent 工具使用同一套业务权限规则。
+
 
 ## 环境要求
 
 | 环境 | 用途 |
 | --- | --- |
 | Docker 与 Docker Compose | 运行 MySQL、PostgreSQL、Elasticsearch、Neo4j 和 Redis。容器部署也使用 Compose。 |
-| JDK 21 | 运行 Spring Boot。开发时将 `JAVA_HOME` 指向 JDK，Maven 由项目内 Wrapper 提供。 |
+
 | Python 3.12 与 uv | 安装并运行 FastAPI、Agent 和 Celery。 |
 | Node.js 22 及 npm | 运行 Vite 开发服务器和构建 React 前端。 |
 | Chrome 或 Edge | 需要使用 Greenhouse 扩展或语音、摄像头功能时，浏览器需支持对应能力并允许访问设备。 |
@@ -117,10 +114,10 @@ if (!(Test-Path api/.env)) { Copy-Item api/.env.example api/.env }
 
 | 配置 | 设置位置 |
 | --- | --- |
-| `JWT_SECRET` | `api/.env` 与 Java 启动终端使用相同的随机值，默认 HS256 要求至少 32 字节。 |
-| `JWT_ALGORITHM` | 默认 `HS256`。若修改，Python 与 Java 启动环境使用相同算法。 |
-| `CAREER_AGENT_INTERNAL_TOKEN` | `api/.env` 与 Java 启动终端使用同一个随机令牌。 |
-| `CAREER_MYSQL_PASSWORD` | 根目录 `.env` 和 Java 启动终端使用相同的 MySQL 密码。若使用已有数据卷，沿用该卷初始化时的密码。 |
+| `JWT_SECRET` | `api/.env` 使用随机值，默认 HS256 要求至少 32 字节。 |
+| `JWT_ALGORITHM` | 默认 `HS256`。 |
+| `CAREER_MYSQL_HOST`、`CAREER_MYSQL_PORT` | 本地填写 `127.0.0.1` 和 `3307`。 |
+| `CAREER_MYSQL_PASSWORD` | 在根目录 `.env` 填一次，Docker Compose 和本地 Python 后端共同使用。若已有 MySQL 数据卷，填写创建账号时使用的密码。 |
 | `FERNET_KEY` | 填入 `api/.env`。安装 Python 依赖后，可在 `api/` 运行 `uv run --locked python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` 生成。使用已有 PostgreSQL 数据时沿用原密钥。 |
 
 如果改了根目录 `.env` 中的 PostgreSQL 或 Neo4j 登录配置，也要同步 `api/.env`。
@@ -130,14 +127,18 @@ docker compose up -d --build --wait postgres elasticsearch neo4j redis
 docker compose -f compose.career.yml up -d --wait
 ```
 
-### 2. 启动 Python Agent
+### 2. 启动 Python 后端
 
-在单独的终端从仓库根目录执行。安装依赖后确认 `api/.env` 已配置有效的 Fernet 密钥。
+在单独的终端从仓库根目录执行。确认 `api/.env` 已设置有效的 Fernet 密钥，并将 `CAREER_NATIVE_WORKER_ENABLED` 设为 `true`。
+
+如果开发用的 MySQL 容器已运行，根目录 `.env` 还没有保存密码，可在 `api/` 运行
+`python -m scripts.configure_career_mysql`，将容器使用的密码保存到共享配置。
 
 ```powershell
 Set-Location api
 uv sync --locked --python 3.12
 uv run --locked alembic upgrade head
+uv run --locked python -m scripts.migrate_career_mysql
 uv run --locked uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -153,19 +154,7 @@ uv run --locked celery -A app.celery_app.celery_app worker -l info -Q default,pa
 uv run --locked celery -A app.celery_app.celery_app beat -l info
 ```
 
-### 3. 启动 Java 后端
-
-从仓库根目录另开终端启动 Java。Flyway 会在启动时迁移 MySQL。
-
-```powershell
-$env:JWT_SECRET = Read-Host 'api/.env 中的 JWT_SECRET' -MaskInput
-$env:CAREER_AGENT_INTERNAL_TOKEN = Read-Host 'api/.env 中的内部令牌' -MaskInput
-$env:CAREER_MYSQL_PASSWORD = Read-Host '本地 MySQL career 用户密码' -MaskInput
-Set-Location backend
-.\mvnw.cmd spring-boot:run
-```
-
-### 4. 启动前端
+### 3. 启动前端
 
 从仓库根目录另开终端启动前端。
 
@@ -179,7 +168,7 @@ npm run dev
 
 | 检查 | 地址 |
 | --- | --- |
-| Java 与 Agent 联通 | [`/api/career/health`](http://localhost:5173/api/career/health) |
+| FastAPI 求职数据库与迁移状态 | [`/api/career/health`](http://localhost:5173/api/career/health) |
 | Python 存储连接 | [`/api/health`](http://localhost:5173/api/health) |
 
 ## 首次使用
@@ -194,7 +183,9 @@ npm run dev
 
 ## 容器部署
 
-根目录 `.env` 需要配置 `JWT_SECRET`、`FERNET_KEY`、`CAREER_MYSQL_PASSWORD` 和 `CAREER_AGENT_INTERNAL_TOKEN`。在 `web/nginx.conf` 设置部署域名与证书文件名，并将证书放入 `web/certs/`。
+从双后端升级时，先停止旧的求职业务服务，备份 MySQL 业务库并保留原数据卷。新后端启动时会校验既有迁移版本及校验和，并应用尚未执行的迁移。
+
+根目录 `.env` 需要配置 `JWT_SECRET`、`FERNET_KEY`、`CAREER_MYSQL_PASSWORD`。在 `web/nginx.conf` 设置部署域名与证书文件名，并将证书放入 `web/certs/`。
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
@@ -206,7 +197,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --
 | --- | --- |
 | RAG 检索 | 在 48 篇中文技术短文档、40 条标注查询上，混合检索 Recall@5 为 **90.00%**，较 BM25 提高 **5.00 个百分点**。Hit@5 为 **92.50%**，MRR@5 为 **0.8562**。评测使用本地 BGE-small-zh-v1.5 向量，关闭 Rerank。 |
 | 岗位上下文 | 在 72 条合成对话、144 条约束标注上，约束召回率从固定 40 条消息基线的 **83.33%** 提升至 **98.61%**，平均历史片段 Token 减少 **50.89%**。 |
-| Java 任务调度 | 隔离 MySQL 上的 36 组并发负载中，540 个任务无重复认领，540 次重复请求均返回原任务。24 次租约到期接管全部成功，并拒绝了旧执行者的回写。 |
+| 历史版 Java 任务调度 | 隔离 MySQL 上的 36 组并发负载中，540 个任务无重复认领，540 次重复请求均返回原任务。24 次租约到期接管全部成功，并拒绝了旧执行者的回写。 |
 | 训练断点恢复 | 两处故障注入中，题目目录保存后恢复需 **1 次**模型调用，计划草稿保存后恢复需 **0 次**，最终各保留 **1 份计划**。 |
 
 [数据集、指标口径与复跑命令](docs/career-agent-evaluation.md) · [训练恢复实测](docs/career-agent-training-checkpoints.md)

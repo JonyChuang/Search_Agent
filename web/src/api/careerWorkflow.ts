@@ -34,6 +34,10 @@ export interface CareerTask {
     feedback?: string
     sources?: { title: string; url: string; snippet: string }[]
     searchedAt?: string
+    learning?: {
+      policyVersion: string
+      priorities: { skill: string; misses: number; sampleSize: number; status: 'SELECTED' | 'AVAILABLE' | 'NO_CANDIDATE' }[]
+    }
   } | null
   error: string | null
   generation: number

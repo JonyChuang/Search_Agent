@@ -112,6 +112,21 @@ class MessageRepository:
         )
         return list(reversed(result.scalars().all()))
 
+    async def job_user_history(self, conv_id: uuid.UUID, user_id: uuid.UUID, job_id: uuid.UUID):
+        result = await self.session.stream(
+            select(Message.id, Message.role, Message.content, Message.meta_data)
+            .join(Conversation, Message.conversation_id == Conversation.id)
+            .where(Conversation.id == conv_id, Conversation.user_id == user_id,
+                   Message.meta_data["career_job_id"].astext == str(job_id), Message.role == "user")
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .execution_options(yield_per=40)
+        )
+        try:
+            async for row in result:
+                yield row
+        finally:
+            await result.close()
+
     async def count(self, conv_id: uuid.UUID) -> int:
         total = await self.session.scalar(
             select(func.count())

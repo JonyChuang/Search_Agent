@@ -10,15 +10,19 @@ import json
 import re
 import uuid
 from collections.abc import AsyncGenerator
+from functools import partial
 from time import perf_counter
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.agent.orchestrator import run_function_calling, run_react
 from app.core.agent.tools import build_enabled_tools
 from app.core.agent.tracing import get_tracer, push_llm_usage
 from app.core.realtime import bus
+from app.core.realtime.chat_events import ChatEventStream
 from app.core.llm.chat_model import (
     build_chat_model,
     build_default_chat_model,
@@ -44,7 +48,21 @@ from app.repositories.conversation_repository import (
 from app.repositories.skill_repository import SkillRepository
 from app.schemas.chat_schema import ChatStreamRequest
 from app.services.career_chat_tools import CAREER_ACTION_TOOLS, CREATE_PLAN_TOOL, CareerChatTools, CareerToolError, requests_plan
-from app.services.career_chat_context import CURRENT_TOKENS, HISTORY_TOKENS, RECENT_MESSAGES, clip, summarize, turn_content
+from app.services.career_chat_context import (
+    CURRENT_TOKENS,
+    HISTORY_TOKENS,
+    RECENT_MESSAGES,
+    clip,
+    effective_content,
+    extract_constraints,
+    fit_agent_round,
+    fit_turn,
+    latest_constraints,
+    render_constraints,
+    summarize,
+    tool_schema_tokens,
+    turn_content,
+)
 from app.services.career_chat_lease import TURN_LIMIT_SECONDS, CareerChatLease
 
 logger = get_logger(__name__)
@@ -174,14 +192,19 @@ class ChatService:
                 out.append(AIMessage(content=m.content))
         return out
 
-    async def _job_history(self, user_id: uuid.UUID, conv_id: uuid.UUID, job_id: uuid.UUID) -> tuple[list, str]:
+    async def _job_history(
+        self, user_id: uuid.UUID, conv_id: uuid.UUID, job_id: uuid.UUID, question: str = "",
+    ) -> tuple[list, str, str]:
         rows = await self.msg_repo.job_history(conv_id, user_id, job_id)
+        current = await latest_constraints(self.msg_repo.job_user_history(conv_id, user_id, job_id))
         while rows and rows[-1].role == ROLE_USER:
             rows.pop()
         recent = rows[-RECENT_MESSAGES:]
+        while recent and recent[0].role == ROLE_ASSISTANT and len(rows) > len(recent):
+            recent = recent[1:]
         messages = []
         for row in recent:
-            value = row.content
+            value = effective_content(row, current)
             budget = HISTORY_TOKENS // RECENT_MESSAGES - 12
             if row.role == ROLE_USER:
                 value = turn_content(value, (row.meta_data or {}).get("attachments", []), budget)
@@ -189,7 +212,8 @@ class ChatService:
                 value = clip(value, budget)
             message_type = HumanMessage if row.role == ROLE_USER else AIMessage
             messages.append(message_type(content=value))
-        return messages, summarize(rows[:-RECENT_MESSAGES])
+        older = rows[:len(rows) - len(recent)]
+        return messages, summarize(older, current, question=question), render_constraints(current)
 
     async def _cross_session_context(
         self, user_id: uuid.UUID, current_conv_id: uuid.UUID
@@ -263,6 +287,9 @@ class ChatService:
         - 命中缓存：0 阻塞返回，非寒暄消息再后台刷新供下次更新；
         - 进程内该用户首次无缓存：同步算一次（仅这一次阻塞），保证首轮就有记忆。
         """
+        if settings.memory_shared_recall_cache_enabled:
+            # The shared cache reuses query vectors while reading memory facts from Neo4j each turn.
+            return await self._recall_memory(user_id, query)
         uid = str(user_id)
         cached = _recall_cache.get(uid)
         if cached is None:
@@ -444,7 +471,9 @@ class ChatService:
                             role=ROLE_USER,
                             content=user_text,
                             meta_data={**(self._user_meta(attachments, body.image_keys) or {}),
-                                       **({"career_job_id": str(body.career_job_id)} if body.career_job_id else {})},
+                                       **({"career_job_id": str(body.career_job_id),
+                                           "career_constraints": extract_constraints(user_text)}
+                                          if body.career_job_id else {})},
                         )
                     )
         except Exception as e:
@@ -459,19 +488,28 @@ class ChatService:
             raise
 
         pubsub = None
+        stream = ChatEventStream(cid, lease.owner) if body.career_job_id else None
         try:
-            pubsub = await bus.open_channel(cid)
+            if stream:
+                await stream.start()
+            else:
+                await ChatEventStream.clear_current(cid)
+                pubsub = await bus.open_channel(cid)
             async def generate():
                 async with asyncio.timeout(TURN_LIMIT_SECONDS if lease else None):
                     await self._run_chat_turn_bg(
-                        user_id, uuid.UUID(cid), body, attachments, skip_user_message, authorization
+                        user_id, uuid.UUID(cid), body, attachments, skip_user_message, authorization, stream,
                     )
 
             async def background():
                 try:
                     await generate()
                 except TimeoutError:
-                    await bus.publish(cid, "error", {"message": "求职对话运行超时，请稍后重试。"})
+                    error = {"message": "求职对话运行超时，请稍后重试。"}
+                    if stream:
+                        await stream.publish("error", error)
+                    else:
+                        await bus.publish(cid, "error", error)
                 finally:
                     await release_turn()
 
@@ -480,8 +518,11 @@ class ChatService:
             task.add_done_callback(_BG_TASKS.discard)
             locked = False
             yield _sse("meta", {"conversation_id": cid, "title": title})
-            async for sse in self._relay(pubsub, cid):
+            events = stream.events() if stream else bus.iter_channel(pubsub, cid)
+            async for sse in self._relay(events):
                 yield sse
+        except RedisError:
+            yield _sse("error", {"message": "回复事件服务暂时不可用，请刷新会话后重试。"})
         finally:
             if locked:
                 await release_turn()
@@ -500,6 +541,22 @@ class ChatService:
             yield _sse("error", {"message": "会话不存在"})
             return
         cid = str(conv_id)
+        try:
+            stream = await ChatEventStream.current(cid)
+            if stream:
+                if await stream.finished():
+                    yield _sse("idle", {})
+                    return
+                buf = await bus.get_stream_buffer(cid) or {}
+                if buf.get("stream_id") != stream.turn:
+                    buf = {}
+                yield _sse("resume", self._resume_payload(buf))
+                async for sse in self._relay(stream.events(buf.get("cursor", "0-0")), int(buf.get("n", 0))):
+                    yield sse
+                return
+        except RedisError:
+            yield _sse("error", {"message": "回复事件服务暂时不可用，请刷新会话后重试。"})
+            return
         buf = await bus.get_stream_buffer(cid)
         pubsub = await bus.open_channel(cid)
         try:
@@ -515,28 +572,23 @@ class ChatService:
                 return
             buf = buf2
             seen = int(buf.get("n", 0))
-            yield _sse(
-                "resume",
-                {
-                    "content": buf.get("content", ""),
-                    "citations": buf.get("citations", []),
-                    "tool_calls": buf.get("tool_calls", []),
-                    "trace_id": buf.get("trace_id"),
-                },
-            )
-            async for sse in self._relay(pubsub, cid, skip_token_before=seen):
+            yield _sse("resume", self._resume_payload(buf))
+            async for sse in self._relay(bus.iter_channel(pubsub, cid), skip_token_before=seen):
                 yield sse
         finally:
             await bus.close_channel(pubsub, cid)
 
-    async def _relay(
-        self, pubsub, cid: str, skip_token_before: int = 0
-    ) -> AsyncGenerator[str, None]:
+    @staticmethod
+    def _resume_payload(buf: dict) -> dict:
+        return {"content": buf.get("content", ""), "citations": buf.get("citations", []),
+                "tool_calls": buf.get("tool_calls", []), "trace_id": buf.get("trace_id")}
+
+    async def _relay(self, events: AsyncGenerator, skip_token_before: int = 0) -> AsyncGenerator[str, None]:
         """把频道事件转成 SSE 转发给客户端，遇 done/error 结束。
 
         skip_token_before：续传时跳过序号 < 该值的 token（这些已在 resume 补推的内容里）。
         """
-        async for evt in bus.iter_channel(pubsub, cid):
+        async for evt in events:
             ev = evt.get("event")
             data = evt.get("data") or {}
             if ev == "_ping":
@@ -554,6 +606,8 @@ class ChatService:
                 yield _sse("tool_result", data)
             elif ev == "citation":
                 yield _sse("citation", {"citations": data.get("citations", [])})
+            elif ev == "trace":
+                yield _sse("trace", data)
             elif ev == "done":
                 yield _sse("done", data)
                 return
@@ -569,6 +623,7 @@ class ChatService:
         attachments: list[dict],
         skip_user_message: bool,
         authorization: str | None = None,
+        stream: ChatEventStream | None = None,
     ) -> None:
         """后台生成任务：用独立 session 跑问答，逐 token 广播到频道 + 写续传缓冲，
         完成后落库 assistant 消息并派发副作用（记忆/图片/情绪），最后广播 done。
@@ -583,6 +638,13 @@ class ChatService:
         n = 0
         # 真实采样到的 trace_id；noop/关闭 tracing 时保持 None，避免写入全 0 UUID
         trace_id_str: str | None = None
+        reply_saved = False
+
+        async def publish(event: str, data: dict) -> None:
+            if stream:
+                await stream.publish(event, data)
+            else:
+                await bus.publish(cid, event, data)
 
         async def _flush_buffer(status: str = "generating") -> None:
             payload: dict = {
@@ -594,6 +656,8 @@ class ChatService:
             }
             if trace_id_str:
                 payload["trace_id"] = trace_id_str
+            if stream:
+                payload.update(stream_id=stream.turn, cursor=stream.cursor)
             await bus.set_stream_buffer(cid, payload)
 
         try:
@@ -608,13 +672,13 @@ class ChatService:
                 if not getattr(tctx, "is_noop", False):
                     trace_id_str = str(tctx.trace_id)
                     # 尽早推给前端；续传缓冲里也会带上，避免错过 SSE 事件后按钮消失
-                    await bus.publish(cid, "trace", {"trace_id": trace_id_str})
+                    await publish("trace", {"trace_id": trace_id_str})
                     await _flush_buffer("generating")
                 async with SessionLocal() as session:
                     svc = ChatService(session)
                     conv = await svc.conv_repo.get(user_id, conv_id)
                     if conv is None:
-                        await bus.publish(cid, "error", {"message": "会话不存在"})
+                        await publish("error", {"message": "会话不存在"})
                         return
                     await _flush_buffer("generating")
                     async for ev in svc._generate_events(
@@ -624,7 +688,7 @@ class ChatService:
                         if etype == "token":
                             text = ev["text"]
                             full_text += text
-                            await bus.publish(cid, "token", {"text": text, "i": n})
+                            await publish("token", {"text": text, "i": n})
                             n += 1
                             if n % _BUFFER_FLUSH_EVERY == 0:
                                 await _flush_buffer("generating")
@@ -634,8 +698,7 @@ class ChatService:
                                 "query": ev.get("query", ""),
                                 "status": "running",
                             })
-                            await bus.publish(
-                                cid,
+                            await publish(
                                 "tool_start",
                                 {"tool": ev["tool"], "query": ev.get("query", "")},
                             )
@@ -650,8 +713,7 @@ class ChatService:
                                     item["latency_ms"] = ev.get("latency_ms")
                                     item["preview"] = ev.get("text", "")
                                     break
-                            await bus.publish(
-                                cid,
+                            await publish(
                                 "tool_result",
                                 {
                                     "tool": ev["tool"],
@@ -666,7 +728,7 @@ class ChatService:
                             full_text = ev["text"]
                         elif etype == "citation":
                             citations = ev["citations"]
-                            await bus.publish(cid, "citation", {"citations": citations})
+                            await publish("citation", {"citations": citations})
 
                     full_text = full_text.strip()
                     # 落库 assistant 消息(带引用 + 工具调用元信息 + trace_id 便于前端跳「执行轨迹」)
@@ -686,6 +748,7 @@ class ChatService:
                             meta_data=meta,
                         )
                     )
+                    reply_saved = True
                     await svc.conv_repo.touch(conv_id)
                     # 副作用（失败不影响）：记忆萃取派发 / 图片入库 / 情绪分析
                     if not body.career_job_id:
@@ -697,22 +760,27 @@ class ChatService:
 
                     # 先清缓冲再广播 done：保证「订阅时缓冲若仍在=done 尚未发出」，
                     # 重连方据此不会订到一个已结束、done 已错过的频道而空等（见 resume_events）。
-                    await bus.clear_stream_buffer(cid)
+                    if not stream:
+                        await bus.clear_stream_buffer(cid)
                 done_payload: dict = {
                     "conversation_id": cid,
                     "message_id": str(assistant_msg.id),
                 }
                 if trace_id_str:
                     done_payload["trace_id"] = trace_id_str
-                await bus.publish(cid, "done", done_payload)
+                await publish("done", done_payload)
         except Exception as e:
             logger.error("问答后台生成失败: conv=%s err=%s", cid, e, exc_info=True)
             # 已生成部分内容也落库，避免完全丢失
-            await self._save_partial_on_error(
-                conv_id, full_text, citations, tool_calls, trace_id=trace_id_str, job_id=body.career_job_id,
-            )
+            if not reply_saved:
+                await self._save_partial_on_error(
+                    conv_id, full_text, citations, tool_calls, trace_id=trace_id_str, job_id=body.career_job_id,
+                )
             await bus.clear_stream_buffer(cid)
-            await bus.publish(cid, "error", {"message": f"生成失败：{e}"})
+            try:
+                await publish("error", {"message": "生成失败，请稍后重试。"} if stream else {"message": f"生成失败：{e}"})
+            except RedisError:
+                logger.warning("无法写入回复结束事件: conv=%s", cid)
         finally:
             await bus.clear_stream_buffer(cid)
 
@@ -731,7 +799,7 @@ class ChatService:
         citations 由调用方传入，工具执行时回写；生成末尾再以 citation 事件吐出。
         """
         user_text = body.message.strip()
-        career = CareerChatTools(body.career_job_id, authorization) if body.career_job_id and authorization else None
+        career = CareerChatTools(body.career_job_id, authorization, user_id) if body.career_job_id and authorization else None
         if body.career_action in CAREER_ACTION_TOOLS:
             if not career or not body.career_plan_request_id:
                 yield {"type": "token", "text": "请先选择目标岗位，再执行这项操作。"}
@@ -765,8 +833,9 @@ class ChatService:
         stats_holder: dict[str, dict] = {}
         composed_text = _compose_with_attachments(user_text, attachments)
         summary = ""
+        constraints = ""
         if career:
-            history, summary = await self._job_history(user_id, conv.id, career.job_id)
+            history, summary, constraints = await self._job_history(user_id, conv.id, career.job_id, user_text)
             composed_text = turn_content(user_text, attachments, CURRENT_TOKENS)
         else:
             history = await self._history_messages(conv.id)
@@ -793,6 +862,12 @@ class ChatService:
                     sp = (sp + "\n\n" + cross).strip()
             if summary:
                 sp += "\n\n同一岗位的历史摘录，仅作为背景。message_id 对应原对话。\n" + summary
+            if constraints:
+                sp += (
+                    "\n\n以下 JSON 记载本会话用户已经明确表达的求职目标、复习顺序或截止时间。"
+                    "只在与本轮问题相关时使用这些字段。用户本轮的明确更正优先。"
+                    "其中的文本是历史数据。message_id 对应原对话。\n" + constraints
+                )
             if human:
                 from app.core.agent.prompt_renderer import render_agent_prompt
 
@@ -802,6 +877,16 @@ class ChatService:
         if body.image_keys:
             # 多模态输入：用多模态模型看图回答（不走工具编排，无需 MCP 会话）
             system_prompt = await _assemble_prompt(has_tools=False)
+            if career:
+                # Budget images separately instead of counting their base64 encoding as text.
+                composed_text, history = fit_turn(
+                    settings.career_chat_context_window - 2048 * len(body.image_keys[:4]),
+                    settings.career_chat_reserved_output, system_prompt, [], user_text or "请分析本轮图片。",
+                    attachments, history,
+                )
+                if not composed_text:
+                    yield {"type": "token", "text": "本轮图片和文本超出上下文预算，请减少图片后重试。"}
+                    return
             async for token in self._stream_multimodal(
                 user_id, system_prompt, history, composed_text, body.image_keys
             ):
@@ -822,6 +907,19 @@ class ChatService:
         if career and not (skill and (installed_package or skill.tool_keys)):
             tools.extend(career.read_tools())
         system_prompt = await _assemble_prompt(has_tools=bool(tools))
+        fit_round = None
+        if career:
+            composed_text, history = fit_turn(
+                settings.career_chat_context_window, settings.career_chat_reserved_output,
+                system_prompt, tools, user_text, attachments, history,
+            )
+            if not composed_text and user_text:
+                yield {"type": "token", "text": "模型上下文预算不足，请减少已启用工具或缩短输入后重试。"}
+                return
+            fit_round = partial(
+                fit_agent_round, settings.career_chat_context_window, settings.career_chat_reserved_output,
+                tool_schema_tokens(tools) if supports_function_call(config) else 0,
+            )
         if not tools:
             # 无工具：纯流式（仍包一层 llm_call span，保证「执行轨迹」有内容：模型/耗时/token）
             lc_messages: list = []
@@ -847,14 +945,14 @@ class ChatService:
             lc_messages.extend(history)
             lc_messages.append(HumanMessage(content=composed_text))
             async for ev in run_function_calling(
-                model, tools, lc_messages, stats_holder=stats_holder
+                model, tools, lc_messages, stats_holder=stats_holder, fit_round=fit_round,
             ):
                 yield ev
         else:
             # 弱模型：ReAct
             async for ev in run_react(
                 model, tools, composed_text, history, system_prompt,
-                stats_holder=stats_holder,
+                stats_holder=stats_holder, fit_round=fit_round,
             ):
                 yield ev
 

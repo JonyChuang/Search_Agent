@@ -69,8 +69,32 @@ services:
       APP_DEBUG: "false"
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
       JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      CAREER_AGENT_INTERNAL_TOKEN: ${CAREER_AGENT_INTERNAL_TOKEN:?Set CAREER_AGENT_INTERNAL_TOKEN}
-      CAREER_BACKEND_BASE_URL: http://career-backend:8080
+      CAREER_MYSQL_HOST: mysql
+      CAREER_MYSQL_PORT: "3306"
+      CAREER_MYSQL_DATABASE: search_agent
+      CAREER_MYSQL_USER: career
+      CAREER_MYSQL_PASSWORD: ${CAREER_MYSQL_PASSWORD:?Set CAREER_MYSQL_PASSWORD}
+      CAREER_NATIVE_WORKER_ENABLED: "true"
+      CAREER_CONTENT_CURATORS: ${CAREER_CONTENT_CURATORS:-}
+      CAREER_PUBLIC_NOTE_FEEDS: ${CAREER_PUBLIC_NOTE_FEEDS:-}
+      CAREER_JUDGE0_URL: ${CAREER_JUDGE0_URL:-}
+      CAREER_JUDGE0_TOKEN: ${CAREER_JUDGE0_TOKEN:-}
+      CAREER_JUDGE0_PYTHON_ID: ${CAREER_JUDGE0_PYTHON_ID:-71}
+      CAREER_PUBLIC_NOTE_REFRESH_CRON: ${CAREER_PUBLIC_NOTE_REFRESH_CRON:-0 0 9 * * MON}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ./backend/src/main/resources/db/migration:/app/career-migrations:ro
+    command:
+      - sh
+      - -ec
+      - python -m scripts.migrate_career_mysql --directory /app/career-migrations && exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/api/career/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     deploy:
       resources:
         limits:
@@ -108,42 +132,10 @@ services:
       timeout: 5s
       retries: 20
 
-  career-backend:
-    build: ./backend
-    environment:
-      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
-      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
-      CAREER_BACKEND_BIND: 0.0.0.0
-      CAREER_BACKEND_PORT: "8080"
-      CAREER_MYSQL_URL: jdbc:mysql://mysql:3306/search_agent?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
-      CAREER_MYSQL_USER: career
-      CAREER_MYSQL_PASSWORD: ${CAREER_MYSQL_PASSWORD:?Set CAREER_MYSQL_PASSWORD}
-      CAREER_AGENT_BASE_URL: http://api:8000
-      CAREER_AGENT_INTERNAL_TOKEN: ${CAREER_AGENT_INTERNAL_TOKEN:?Set CAREER_AGENT_INTERNAL_TOKEN}
-      CAREER_CONTENT_CURATORS: ${CAREER_CONTENT_CURATORS:-}
-      CAREER_PUBLIC_NOTE_FEEDS: ${CAREER_PUBLIC_NOTE_FEEDS:-}
-      CAREER_JUDGE0_URL: ${CAREER_JUDGE0_URL:-}
-      CAREER_JUDGE0_TOKEN: ${CAREER_JUDGE0_TOKEN:-}
-      CAREER_JUDGE0_PYTHON_ID: ${CAREER_JUDGE0_PYTHON_ID:-71}
-      CAREER_PUBLIC_NOTE_REFRESH_CRON: ${CAREER_PUBLIC_NOTE_REFRESH_CRON:-0 0 9 * * MON}
-    restart: unless-stopped
-    depends_on:
-      mysql:
-        condition: service_healthy
-      api:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/career/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-
   web:
     restart: unless-stopped
     depends_on:
       api:
-        condition: service_started
-      career-backend:
         condition: service_healthy
     # 宿主 80（HTTP，会被 nginx 301 跳转到 HTTPS）+ 443（HTTPS）
     ports: !override

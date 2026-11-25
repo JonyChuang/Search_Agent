@@ -69,6 +69,7 @@ function fmtTime(iso: string): string {
 const TASK_TYPE_LABELS: Record<string, string> = {
   research: '深度研究',
   chat: '对话',
+  career_task: '求职任务',
   agent_task: '定时任务',
   verify: '审稿',
   repair: '修复',
@@ -77,6 +78,7 @@ const TASK_TYPE_LABELS: Record<string, string> = {
 const TASK_TYPE_COLORS: Record<string, string> = {
   research: 'purple',
   chat: 'blue',
+  career_task: 'geekblue',
   agent_task: 'orange',
   verify: 'cyan',
   repair: 'magenta',

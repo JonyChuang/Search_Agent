@@ -79,6 +79,14 @@ export default function TrainingPlanCard({ task }: { task: CareerTask }) {
           key: 'analysis', label: '岗位分析与训练步骤',
           children: <>
             {task.result?.analysis && <p className={styles.longText}>{task.result.analysis}</p>}
+            {!!task.result?.learning?.priorities.length && <div>
+              <h3 className={styles.smallTitle}>本岗位近期做题反馈</h3>
+              <ul>{task.result.learning.priorities.map(({ skill, misses, sampleSize, status }) => (
+                <li key={skill}>{skill} · {sampleSize} 道题中有 {misses} 道最近一次答错 · {
+                  { SELECTED: '本计划已安排新题', AVAILABLE: '有可用候选，本计划未选入', NO_CANDIDATE: '本次目录暂无新题' }[status]
+                }</li>
+              ))}</ul>
+            </div>}
             {!!task.result?.steps?.length && <ol>{task.result.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
             <TaskDetails task={task} />
           </>,
