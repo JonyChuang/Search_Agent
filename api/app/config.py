@@ -1,10 +1,13 @@
 """应用配置：全部从环境变量 / .env 读取，不硬编码。"""
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.schemas.mcp_schema import ReviewedMCPRead
 
 _API_ROOT = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = _API_ROOT.parent
@@ -37,9 +40,12 @@ class Settings(BaseSettings):
     career_mysql_password: SecretStr = SecretStr("")
     career_native_worker_enabled: bool = False
     mcp_shared_tool_cache_enabled: bool = False
+    mcp_reviewed_reads: list[ReviewedMCPRead] = []
     memory_shared_recall_cache_enabled: bool = False
     career_chat_context_window: int = 32768
     career_chat_reserved_output: int = 2048
+    career_alert_webhook_url: SecretStr = SecretStr("")
+    career_alert_webhook_token: SecretStr = SecretStr("")
     chat_context_window: int = 32768
     chat_reserved_output: int = 2048
     career_judge0_url: str = ""
@@ -49,6 +55,15 @@ class Settings(BaseSettings):
     career_public_note_feeds: str = ""
     career_public_note_refresh_cron: str = "0 0 9 * * MON"
     career_agent_internal_token: SecretStr = SecretStr("")
+
+    @field_validator("career_alert_webhook_url")
+    @classmethod
+    def validate_alert_webhook(cls, value: SecretStr) -> SecretStr:
+        if value.get_secret_value():
+            endpoint = urlsplit(value.get_secret_value())
+            if endpoint.scheme != "https" or not endpoint.hostname or endpoint.username is not None or endpoint.fragment:
+                raise ValueError("CAREER_ALERT_WEBHOOK_URL requires an HTTPS URL without user info or a fragment")
+        return value
 
     @field_validator("career_mysql_password")
     @classmethod

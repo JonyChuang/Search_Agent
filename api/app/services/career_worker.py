@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from uuid import UUID
 
+import httpx
 from openai import APIConnectionError, RateLimitError
 from sqlalchemy import text
 
+from app.config import settings
 from app.core.agent.tracing import get_tracer
 from app.core.exceptions import BizError
 from app.db.career import career_transaction
@@ -287,6 +289,7 @@ async def monitor_queue() -> None:
                 """))
                 queued, expired, oldest = rows.one()
             await record_queue_sample(queued, expired, max(0, oldest))
+            await deliver_queue_alerts()
         except Exception as error:
             logger.warning("Career queue monitoring unavailable type=%s", type(error).__name__)
         await asyncio.sleep(60)
@@ -298,20 +301,61 @@ async def record_queue_sample(queued: int, expired: int, oldest: int) -> None:
     log("Career queue queued=%s expired_leases=%s oldest_wait_seconds=%s", queued, expired, oldest)
     async with SessionLocal.begin() as session:
         previous = (await session.execute(text("""
-            WITH inserted AS (
-                INSERT INTO career_queue_samples(sampled_at, queued, expired_leases, oldest_wait_seconds, alert)
-                VALUES (date_trunc('minute', now()), :queued, :expired, :oldest, :alert)
+            WITH previous AS (
+                SELECT COALESCE((
+                    SELECT alert FROM career_queue_samples WHERE sampled_at < date_trunc('minute', now())
+                    ORDER BY sampled_at DESC LIMIT 1
+                ), false) AS alert
+            ), inserted AS (
+                INSERT INTO career_queue_samples(sampled_at, queued, expired_leases, oldest_wait_seconds, alert,
+                                                 notification_pending)
+                SELECT date_trunc('minute', now()), :queued, :expired, :oldest, :alert,
+                    :notify AND previous.alert <> :alert FROM previous
                 ON CONFLICT (sampled_at) DO NOTHING RETURNING sampled_at
             )
-            SELECT COALESCE((
-                SELECT alert FROM career_queue_samples WHERE sampled_at < inserted.sampled_at
-                ORDER BY sampled_at DESC LIMIT 1
-            ), false) FROM inserted
-        """), {"queued": queued, "expired": expired, "oldest": oldest, "alert": alert})).scalar_one_or_none()
+            SELECT previous.alert FROM inserted CROSS JOIN previous
+        """), {"queued": queued, "expired": expired, "oldest": oldest, "alert": alert,
+               "notify": bool(settings.career_alert_webhook_url.get_secret_value())})).scalar_one_or_none()
     if previous is not None and previous != alert:
         level = logger.warning if alert else logger.info
         level("Career queue alert transition=%s backlog=%s expired_leases=%s",
               "raised" if alert else "cleared", queued, expired)
+
+
+async def deliver_queue_alerts() -> None:
+    endpoint = settings.career_alert_webhook_url.get_secret_value()
+    if not endpoint:
+        return
+    token = settings.career_alert_webhook_token.get_secret_value()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with httpx.AsyncClient(timeout=4, follow_redirects=False, trust_env=False, headers=headers) as client:
+        for _ in range(5):
+            async with SessionLocal.begin() as session:
+                if not (await session.execute(text(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended('career-queue-alert-delivery', 0))"
+                ))).scalar_one():
+                    return
+                row = (await session.execute(text("""
+                    SELECT sampled_at, queued, expired_leases, oldest_wait_seconds, alert
+                    FROM career_queue_samples WHERE notification_pending IS TRUE ORDER BY sampled_at LIMIT 1
+                """))).mappings().one_or_none()
+                if not row:
+                    return
+                event = {key: row[key] for key in ("queued", "expired_leases", "oldest_wait_seconds")}
+                sampled_at = row["sampled_at"].isoformat()
+                event_id = f"career-queue:{sampled_at}"
+                try:
+                    async with asyncio.timeout(5):
+                        response = await client.post(endpoint, headers={"Idempotency-Key": event_id}, json={
+                            **event, "id": event_id, "sampled_at": sampled_at, "state": "raised" if row["alert"] else "cleared",
+                        })
+                        response.raise_for_status()
+                except (httpx.HTTPError, TimeoutError) as error:
+                    logger.warning("Career queue alert delivery pending id=%s type=%s", event_id, type(error).__name__)
+                    return
+                await session.execute(text("""
+                    UPDATE career_queue_samples SET notification_pending = false WHERE sampled_at = :at
+                """), {"at": row["sampled_at"]})
 
 
 def start_workers() -> list[asyncio.Task]:

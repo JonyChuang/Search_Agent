@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from httpx import ASGITransport, AsyncClient
+from httpx import MockTransport, Response
+from pydantic import SecretStr
 from redis.asyncio import Redis
 from sqlalchemy import delete, select, text
 
@@ -88,6 +90,33 @@ class RuntimeIntegrationTest(IsolatedAsyncioTestCase):
             restored = await versions.save(expected=3, rollback=1)
             self.assertEqual(restored["state"], original["state"])
             self.assertEqual(restored["version"], 4)
+
+    async def test_mixed_context_fields_keep_per_field_provenance_and_cancel_without_replay(self):
+        async with SessionLocal() as session:
+            versions = CareerContextVersions(session, self.owner, self.conv, self.job)
+            message = Message(conversation_id=self.conv, role="user",
+                              content="截止时间改为周五，意向城市改为杭州，请重新安排我的训练计划。",
+                              meta_data={"career_job_id": str(self.job)})
+            first = await versions.save(message=message)
+            self.assertEqual(first["state"], {"截止时间": [str(message.id), "周五"], "意向城市": [str(message.id), "杭州"]})
+            changed = await versions.save(expected=1, edits={"意向城市": "南京", "实习时长": "三个月"})
+            self.assertEqual(changed["field_meta"]["截止时间"], {"version": 1, "confirmed": True})
+            self.assertEqual(changed["field_meta"]["意向城市"], {"version": 2, "confirmed": True})
+            canceled = Message(conversation_id=self.conv, role="user", content="取消截止时间，请继续。",
+                               meta_data={"career_job_id": str(self.job)})
+            await versions.save(message=canceled)
+            current = await versions.read()
+            self.assertNotIn("截止时间", current["state"])
+            self.assertNotIn("截止时间", current["field_meta"])
+
+    async def test_reviewed_read_quota_shared_by_redis_clients(self):
+        server_id = uuid4()
+        key = f"mcp:reviewed-read:{self.owner}:{server_id}:fixture"
+        self.addAsyncCleanup(self.remove_redis_keys, key)
+        with (patch.object(execution, "get_redis", side_effect=[self.redis_a, self.redis_b]),
+              patch.object(execution, "_READS_PER_MINUTE", 1)):
+            self.assertTrue(await execution._reviewed_read_quota(self.owner, server_id, "fixture"))
+            self.assertFalse(await execution._reviewed_read_quota(self.owner, server_id, "fixture"))
 
     async def test_stream_resumes_across_app_instances_and_checks_owner(self):
         stream = chat_events.ChatEventStream(str(self.conv), str(uuid4()))
@@ -210,3 +239,43 @@ class RuntimeIntegrationTest(IsolatedAsyncioTestCase):
             self.assertEqual(rows, [(3, True), (0, False)])
             self.assertEqual(sum("transition=raised" in line for line in logs.output), 1)
             self.assertEqual(sum("transition=cleared" in line for line in logs.output), 1)
+
+    async def test_queue_webhook_retries_and_preserves_transition_order(self):
+        calls = []
+
+        def receive(request):
+            import json
+
+            payload = json.loads(request.content)
+            self.assertEqual(request.headers["Idempotency-Key"], payload["id"])
+            self.assertEqual(request.headers["Authorization"], "Bearer fixture")
+            calls.append(payload)
+            return Response(503 if len(calls) == 1 else 204)
+
+        async with SessionLocal.begin() as session:
+            await session.execute(text("""
+                CREATE TEMP TABLE career_queue_samples (LIKE public.career_queue_samples INCLUDING ALL) ON COMMIT DROP
+            """))
+
+            @asynccontextmanager
+            async def begin():
+                yield session
+
+            client_factory = AsyncClient
+
+            def client(**kwargs):
+                return client_factory(**kwargs, transport=MockTransport(receive))
+
+            endpoint = SecretStr("https://monitor.example.test/career")
+            with (patch.object(career_worker, "SessionLocal", SimpleNamespace(begin=begin)),
+                  patch.object(career_worker.settings, "career_alert_webhook_url", endpoint),
+                  patch.object(career_worker.settings, "career_alert_webhook_token", SecretStr("fixture")),
+                  patch.object(career_worker.httpx, "AsyncClient", side_effect=client)):
+                await career_worker.record_queue_sample(3, 1, 310)
+                await session.execute(text("UPDATE career_queue_samples SET sampled_at = sampled_at - interval '1 minute'"))
+                await career_worker.record_queue_sample(0, 0, 0)
+                await career_worker.deliver_queue_alerts()
+                await career_worker.deliver_queue_alerts()
+            self.assertEqual([call["state"] for call in calls], ["raised", "raised", "cleared"])
+            self.assertEqual(calls[0]["id"], calls[1]["id"])
+            self.assertEqual(await session.scalar(text("SELECT count(*) FROM career_queue_samples WHERE notification_pending")), 0)

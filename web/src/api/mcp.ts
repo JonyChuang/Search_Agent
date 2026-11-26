@@ -8,7 +8,7 @@ interface Wrapped<T> {
 
 export type McpTransport = 'sse' | 'streamable_http'
 export type McpAuthType = 'none' | 'bearer' | 'api_key'
-export type McpPermission = 'read' | 'confirm'
+export type McpPermission = 'read' | 'confirm' | 'reviewed_read'
 
 export interface McpApproval {
   id: string
@@ -35,6 +35,7 @@ export interface McpServer {
   last_error: string | null
   tools_cache: McpToolMeta[]
   tool_permissions: Record<string, McpPermission>
+  reviewed_reads?: Record<string, string>
   synced_at: string | null
   created_at: string
 }

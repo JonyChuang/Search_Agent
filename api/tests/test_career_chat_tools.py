@@ -1,6 +1,7 @@
 import json
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -61,3 +62,22 @@ class CareerChatToolsTest(IsolatedAsyncioTestCase):
         with patch("app.services.career_chat_tools.httpx.AsyncClient", return_value=client) as factory:
             self.assertEqual(json.loads(await read_job.ainvoke({}))["title"], "示例岗位")
         self.assertEqual(factory.call_args.kwargs["headers"], headers)
+
+    async def test_mixed_turn_dispatches_requested_plan_with_current_constraints(self):
+        body = ChatStreamRequest(
+            message="截止时间改为周五，请按照新的截止时间重新安排我的训练计划。",
+            career_job_id=uuid4(), career_plan_request_id=uuid4(),
+        )
+        service = ChatService(None)
+        source = str(uuid4())
+        saved = {"version": 4, "state": {"截止时间": [source, "周五"]}}
+        with (patch.object(settings, "career_mysql_host", "localhost"),
+              patch("app.services.chat_service.CareerContextVersions") as versions,
+              patch.object(CareerChatTools, "create_plan", new=AsyncMock(return_value=str(uuid4()))) as create):
+            versions.return_value.read = AsyncMock(return_value=saved)
+            conv = SimpleNamespace(id=uuid4())
+            events = [event async for event in service._generate_events(uuid4(), conv, body, [], [], "Bearer fixture")]
+        create.assert_awaited_once_with(body.career_plan_request_id, pinned=[
+            {"field": "截止时间", "value": "周五", "source_message_id": source, "confirmed": True, "version": 4},
+        ])
+        self.assertEqual(events[1]["status"], "success")

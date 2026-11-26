@@ -43,6 +43,7 @@ class ModelConfigService:
             api_key_encrypted=encrypt_secret(body.api_key),
             base_url=body.base_url,
             capability=body.capability,
+            context_window_tokens=body.context_window_tokens,
             is_default=body.is_default,
         )
         # 设为默认则先清掉同类型旧默认
@@ -70,6 +71,8 @@ class ModelConfigService:
             config.base_url = body.base_url
         if body.capability is not None:
             config.capability = body.capability
+        if "context_window_tokens" in body.model_fields_set:
+            config.context_window_tokens = body.context_window_tokens
         if body.api_key:  # 非空才更新 key
             config.api_key_encrypted = encrypt_secret(body.api_key)
         return await self.repo.save(config)
@@ -118,6 +121,7 @@ class ModelConfigService:
             "api_key_masked": mask_secret(decrypt_secret(config.api_key_encrypted)),
             "base_url": config.base_url,
             "capability": config.capability,
+            "context_window_tokens": config.context_window_tokens,
             "is_default": config.is_default,
             "created_at": config.created_at.isoformat(),
         }

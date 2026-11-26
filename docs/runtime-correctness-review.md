@@ -1,5 +1,7 @@
 # 正确性、安全性与恢复验收记录
 
+本页保留上一轮验收记录。混合请求、字段级约束和 MCP 限时预授权见 [岗位约束与运行配置](python-runtime-operations.md#岗位约束与运行配置)。
+
 代码基线为 GitHub 上 Search_Agent 的 main 提交 `632aa84`。运行架构由 FastAPI、Python Career Worker、Celery Worker 和 Beat 构成。两个新增 Alembic 版本只增加 PostgreSQL 索引和监控采样表。MySQL 迁移历史、任务检查点、Redis Stream 键和游标格式沿用当前版本。
 
 | 项目 | 根因 | 修改文件与核心变更 | 验证结果 | 兼容性与剩余风险 |

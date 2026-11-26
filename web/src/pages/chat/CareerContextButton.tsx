@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Button, Drawer, Form, Input, InputNumber, Popconfirm, Space, message } from 'antd'
 import { careerContextApi, type CareerContextState } from '@/api/chat'
 
-const fields = ['求职目标', '复习顺序', '截止时间']
+const fallbackFields = ['求职目标', '复习顺序', '截止时间']
 
 export default function CareerContextButton({ conversation, job }: { conversation: string; job: string }) {
   const [open, setOpen] = useState(false)
@@ -10,11 +10,13 @@ export default function CareerContextButton({ conversation, job }: { conversatio
   const [target, setTarget] = useState<number | null>(null)
   const [busy, setBusy] = useState(false)
   const [form] = Form.useForm<Record<string, string>>()
+  const fields = state?.constraint_types ?? fallbackFields
 
   function fill(data: CareerContextState) {
     setState(data)
     setTarget(null)
-    form.setFieldsValue(Object.fromEntries(fields.map((name) => [name, data.state[name]?.[1] ?? ''])))
+    form.setFieldsValue(Object.fromEntries((data.constraint_types ?? fallbackFields)
+      .map((name) => [name, data.state[name]?.[1] ?? ''])))
   }
 
   async function load() {
@@ -32,7 +34,8 @@ export default function CareerContextButton({ conversation, job }: { conversatio
   async function save(values?: Record<string, string>) {
     if (!state) return
     const edits = values && Object.fromEntries(fields
-      .filter((name) => (values[name]?.trim() ?? '') !== (state.state[name]?.[1] ?? ''))
+      .filter((name) => (values[name]?.trim() ?? '') !== (state.state[name]?.[1] ?? '')
+        || state.constraints?.some((item) => item.field === name && !item.confirmed))
       .map((name) => [name, values[name]?.trim() || null]))
     if (!target && (!edits || !Object.keys(edits).length)) return
     setBusy(true)
@@ -50,8 +53,10 @@ export default function CareerContextButton({ conversation, job }: { conversatio
   return <>
     <Button size="small" onClick={() => void load()}>上下文约束</Button>
     <Drawer title="岗位上下文约束" open={open} onClose={() => setOpen(false)} forceRender>
+      {state?.job_facts?.location && <p>岗位实际地点 {state.job_facts.location}（来自岗位记录）</p>}
       <Form form={form} layout="vertical" disabled={busy || !state} onFinish={(values) => void save(values)}>
-        {fields.map((name) => <Form.Item key={name} label={name} name={name}>
+        {fields.map((name) => <Form.Item key={name} label={name} name={name}
+          extra={state?.constraints?.some((item) => item.field === name && !item.confirmed) ? '来自历史消息，保存可确认。' : undefined}>
           <Input.TextArea maxLength={500} autoSize={{ minRows: 2 }} />
         </Form.Item>)}
         <Space>

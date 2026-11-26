@@ -16,10 +16,11 @@ from app.config import settings
 from app.core.agent.tools.builtin.web_search import get_websearch_config
 from app.core.agent.tracing import get_tracer, push_llm_usage
 from app.core.agent.web_search import web_search_structured
-from app.core.llm.chat_model import build_default_chat_model, supports_function_call
+from app.core.llm.chat_model import build_default_chat_model, chat_context_budget, supports_function_call
 from app.db.postgres import SessionLocal
 from app.repositories.skill_repository import SkillRepository
-from app.services.career_context import assemble_context, compact_catalog, encode, excerpt
+from app.services.career_chat_context import message_cost, tool_schema_tokens
+from app.services.career_context import CareerContextTooLarge, assemble_context, compact_catalog, encode, excerpt
 from app.services.career_question_catalog import order_questions, required_skills, skills_in
 from app.services.career_training_harness import learning_candidates
 from app.services.skill_builtins import get_builtin_skill
@@ -167,6 +168,12 @@ async def execute(run: CareerRun, native: CareerCheckpoints | None = None) -> di
             skill = await load_career_skill(run, skill, SkillRepository(session))
         if not supports_function_call(config):
             raise MissingCareerTools()
+        window = getattr(config, "context_window_tokens", None)
+        model_budget = None
+        if window:
+            window, reserve = chat_context_budget(config, career=True)
+            model.max_tokens = reserve
+            model_budget = window - reserve
 
         async with career_checkpoints(run, native) as callbacks:
             trace = CareerTrace(run, callbacks)
@@ -181,7 +188,7 @@ async def execute(run: CareerRun, native: CareerCheckpoints | None = None) -> di
             if run.kind == "TRAINING":
                 await train(
                     run.model_copy(update={"context": payload}), model, trace=trace,
-                    skill=prepared["skill"], native_catalog=native is not None,
+                    skill=prepared["skill"], native_catalog=native is not None, model_budget=model_budget,
                 )
                 return {"status": "UP"}
 
@@ -191,6 +198,7 @@ async def execute(run: CareerRun, native: CareerCheckpoints | None = None) -> di
             ]
             started = perf_counter()
             try:
+                check_model_budget(model_budget, messages, schema)
                 result = await model.with_structured_output(
                     schema, method="function_calling", include_raw=True,
                 ).ainvoke(messages)
@@ -347,23 +355,34 @@ class CareerTrace:
             logger.warning("Career task %s could not record %s (%s)", self.run.id, step, type(error).__name__)
 
 
+def check_model_budget(budget: int | None, messages: list, schema) -> None:
+    if budget is not None and sum(map(message_cost, messages)) + tool_schema_tokens([schema]) + 512 > budget:
+        raise CareerContextTooLarge()
+
+
 async def train(
     run: CareerRun, model: ChatOpenAI, trace: CareerTrace | None = None, skill: dict | None = None,
-    *, native_catalog: bool = False,
+    *, native_catalog: bool = False, model_budget: int | None = None,
 ) -> None:
     instructions = skill_instructions(skill or career_skill(run)[1])
     if trace is None:
         async with career_checkpoints(run) as callbacks:
-            await execute_training(run, model, callbacks, instructions)
+            await execute_training(run, model, callbacks, instructions, model_budget=model_budget)
     else:
-        await execute_training(run, model, trace.callbacks, instructions, trace, native_catalog=native_catalog)
+        await execute_training(run, model, trace.callbacks, instructions, trace, native_catalog=native_catalog,
+                               model_budget=model_budget)
 
 
 async def execute_training(
     run: CareerRun, model: ChatOpenAI, callbacks: CareerCheckpoints,
     instructions: str, trace: CareerTrace | None = None,
-    *, native_catalog: bool = False,
+    *, native_catalog: bool = False, model_budget: int | None = None,
 ):
+    if run.context.get("studyConstraints"):
+        instructions += (
+            "\n按 studyConstraints 中的当前目标、复习顺序和截止时间安排计划。"
+            "其他求职偏好仅在相关时使用，岗位实际地点以 job.location 为准。"
+        )
     messages = [
         SystemMessage(content=instructions),
         HumanMessage(content=encode(run.context)),
@@ -384,6 +403,7 @@ async def execute_training(
         started = perf_counter()
         response = None
         try:
+            check_model_budget(model_budget, messages, list_training_questions)
             response = await model.bind_tools(
                 [list_training_questions], tool_choice="list_training_questions",
             ).ainvoke(messages)
@@ -409,7 +429,7 @@ async def execute_training(
     ordered = order_questions(catalog, run.context.get("job", {}), run.context.get("preferredQuestion"), targets)
     plan = await generate_plan(
         run, model, messages[0], messages[1], response, call["id"], compact_catalog(ordered), trace,
-        practice_targets=targets,
+        practice_targets=targets, model_budget=model_budget,
     )
     await callbacks.plan(plan.model_dump())
 
@@ -418,7 +438,7 @@ async def generate_plan(
     run: CareerRun, model: ChatOpenAI, system: SystemMessage, context: HumanMessage, lookup: AIMessage, call_id: str,
     catalog: list[dict],
     trace: CareerTrace | None = None,
-    *, practice_targets: dict[tuple[str, int], tuple[str, ...]] | None = None,
+    *, practice_targets: dict[tuple[str, int], tuple[str, ...]] | None = None, model_budget: int | None = None,
 ) -> create_training_plan:
     instructions = system.content + (
         "你是求职训练教练。题目目录已经查到。结合 JD 和已确认经历，用中文制定训练计划。"
@@ -458,6 +478,7 @@ async def generate_plan(
         if feedback:
             messages = [SystemMessage(content=instructions + "\n上一次提交的校验结果：" + feedback), *messages[1:]]
         try:
+            check_model_budget(model_budget, messages, create_training_plan)
             async with get_tracer().llm_span("career:create_training_plan", model_name=model.model_name):
                 response = await generator.ainvoke(messages)
                 push_llm_usage(response, model)

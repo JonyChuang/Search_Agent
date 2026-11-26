@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from langchain_openai import ChatOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.exceptions import BizError
 from app.core.security import decrypt_secret
 from app.models.model_config_model import ModelConfig
@@ -17,6 +18,13 @@ from app.repositories.model_config_repository import ModelConfigRepository
 # 模型能力标记：是否支持原生 function calling（方案B 强/弱模型分流依据）
 CAP_FUNCTION_CALL = "function_call"
 CAP_VISION = "vision"
+
+
+def chat_context_budget(config: ModelConfig, *, career: bool = False) -> tuple[int, int]:
+    configured_window = getattr(config, "context_window_tokens", None)
+    window = configured_window or (settings.career_chat_context_window if career else settings.chat_context_window)
+    reserve = settings.career_chat_reserved_output if career else settings.chat_reserved_output
+    return window, min(reserve, window // 4)
 
 
 async def get_default_chat_config(

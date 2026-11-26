@@ -8,7 +8,7 @@ from sqlalchemy import text
 from app.core.exceptions import BizError
 from app.models.conversation_model import Message
 from app.repositories.conversation_repository import ConversationRepository, MessageRepository
-from app.services.career_chat_context import extract_constraints, latest_constraints
+from app.services.career_chat_context import extract_constraints, latest_constraints, normalize_constraint_value
 
 
 class CareerContextVersions:
@@ -24,7 +24,7 @@ class CareerContextVersions:
 
     async def _latest(self, version: int | None = None):
         return (await self.session.execute(text("""
-            SELECT version, state, source, created_at FROM career_context_versions
+            SELECT version, state, source, created_at, field_meta FROM career_context_versions
             WHERE conversation_id = :conversation AND job_id = :job
                 AND (CAST(:version AS INTEGER) IS NULL OR version = :version)
             ORDER BY version DESC LIMIT 1
@@ -34,7 +34,13 @@ class CareerContextVersions:
         await self._verify()
         row = await self._latest(version)
         if row is not None:
-            return dict(row)
+            state = {}
+            for key, (source, value) in row["state"].items():
+                legacy = key not in (row["field_meta"] or {})
+                normalized = normalize_constraint_value(key, value) if source and legacy else value
+                if normalized is not None:
+                    state[key] = [source, normalized]
+            return {**dict(row), "state": state}
         if version is not None:
             raise BizError("上下文版本不存在", code=404, status_code=404)
         history = MessageRepository(self.session).job_user_history(self.keys["conversation"], self.user_id, self.keys["job"])
@@ -49,30 +55,44 @@ class CareerContextVersions:
         if expected is not None and expected != version:
             raise BizError("上下文已更新，请刷新后再修改", code=409, status_code=409)
         state = dict(current["state"])
+        metadata = current.get("field_meta") or {
+            key: {"version": version, "confirmed": version > 0} for key in state
+        }
+        next_meta = dict(metadata)
         if rollback is not None:
-            state = (await self.read(rollback))["state"]
+            restored = await self.read(rollback)
+            state = restored["state"]
+            next_meta = restored.get("field_meta") or {
+                key: {"version": rollback, "confirmed": True} for key in state
+            }
             source = f"rollback:{rollback}"
         elif message is not None:
             if message.conversation_id != self.keys["conversation"] or message.role != "user":
                 raise BizError("约束来源不属于本次用户对话", code=400, status_code=400)
             self.session.add(message)
             await self.session.flush()
-            state.update({field: [str(message.id), value] for field, value in extract_constraints(message.content).items()})
+            edits = extract_constraints(message.content)
             source = "message"
         else:
-            for field, value in edits.items():
+            source = "user_edit"
+        if rollback is None:
+            for field, value in (edits or {}).items():
                 if value is None:
                     state.pop(field, None)
+                    next_meta.pop(field, None)
                 else:
-                    state[field] = [None, value]
-            source = "user_edit"
+                    entry = [str(message.id) if message is not None else None, value.strip()]
+                    if tuple(state.get(field, ())) != tuple(entry) or not next_meta.get(field, {}).get("confirmed"):
+                        next_meta[field] = {"version": version + 1, "confirmed": True}
+                    state[field] = entry
         comparable = {key: list(value) for key, value in current["state"].items()}
-        if version > 0 and state == comparable:
+        if version > 0 and state == comparable and next_meta == metadata:
             await self.session.commit()
             return current
         await self.session.execute(text("""
-            INSERT INTO career_context_versions(conversation_id, job_id, version, state, source)
-            VALUES (:conversation, :job, :version, CAST(:state AS JSONB), :source)
-        """), {**self.keys, "version": version + 1, "state": json.dumps(state, ensure_ascii=False), "source": source})
+            INSERT INTO career_context_versions(conversation_id, job_id, version, state, source, field_meta)
+            VALUES (:conversation, :job, :version, CAST(:state AS JSONB), :source, CAST(:field_meta AS JSONB))
+        """), {**self.keys, "version": version + 1, "state": json.dumps(state, ensure_ascii=False), "source": source,
+               "field_meta": json.dumps(next_meta, ensure_ascii=False)})
         await self.session.commit()
-        return {"version": version + 1, "state": state, "source": source}
+        return {"version": version + 1, "state": state, "source": source, "field_meta": next_meta}

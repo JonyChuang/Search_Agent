@@ -89,7 +89,7 @@ async def review(body: ReviewRequest, db: Records):
     return success(view(await queue.insert(db.user, "REVIEW", job_id, request, context)))
 
 
-async def submit(kind: str, body: JobRequest, db: Records) -> dict:
+async def submit(kind: str, body: JobRequest, db: Records, *, pinned: list[dict] | None = None) -> dict:
     queue = CareerQueue(db.db)
     request = body.model_dump(mode="json", exclude_none=True)
     if request.get("documentIds") == []:
@@ -102,6 +102,7 @@ async def submit(kind: str, body: JobRequest, db: Records) -> dict:
     job = await db.jobs().get(str(body.jobId))
     snapshot = {
         "label": f"{job['company']} · {job['title']}", "company": job["company"], "title": job["title"],
+        "location": job["location"],
     }
     context: dict = {"job": snapshot}
     if not kind == "DISCOVERY":
@@ -122,6 +123,8 @@ async def submit(kind: str, body: JobRequest, db: Records) -> dict:
             if body.topic and body.topic.strip():
                 context["topic"] = body.topic.strip()
     if isinstance(body, TrainingRequest):
+        if pinned:
+            context["studyConstraints"] = pinned
         await CareerTraining(db).apply_training_snapshot(job["id"], request, context)
     if isinstance(body, InterviewRequest):
         service = CareerTraining(db)

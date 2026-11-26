@@ -32,6 +32,7 @@ export interface ModelConfigItem {
   api_key_masked: string
   base_url: string
   capability: string[]
+  context_window_tokens?: number | null
   is_default: boolean
   created_at: string
 }
@@ -44,6 +45,7 @@ export interface ModelConfigPayload {
   api_key: string
   base_url: string
   capability: string[]
+  context_window_tokens?: number | null
   is_default: boolean
 }
 

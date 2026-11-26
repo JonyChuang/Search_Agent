@@ -20,7 +20,7 @@ from app.schemas.chat_schema import (
     FeedbackRequest,
 )
 from app.services.chat_service import ChatService
-from app.services.career_chat_context import known_constraint_fields
+from app.services.career_chat_context import constraint_details, constraint_types, known_constraint_fields
 from app.services.career_context_versions import CareerContextVersions
 from app.services.career_records import CareerRecords
 from app.services.conversation_service import ConversationService
@@ -30,21 +30,30 @@ router = APIRouter(tags=["chat"])
 
 class CareerContextUpdate(BaseModel):
     expected_version: int = Field(ge=0)
-    fields: dict[str, str | None] | None = Field(default=None, max_length=3)
+    fields: dict[str, str | None] | None = Field(default=None, max_length=len(constraint_types()))
     rollback_to: int | None = Field(default=None, ge=1)
 
 
 async def _career_context(session, user, conv_id, job_id):
     async with career_transaction() as connection:
-        await CareerRecords(connection, str(user.id)).jobs().get(str(job_id))
-    return CareerContextVersions(session, user.id, conv_id, job_id)
+        job = await CareerRecords(connection, str(user.id)).jobs().get(str(job_id))
+    return CareerContextVersions(session, user.id, conv_id, job_id), job
+
+
+def _career_context_response(saved: dict, job: dict) -> dict:
+    metadata = saved.get("field_meta")
+    return success({
+        **{key: value for key, value in saved.items() if key != "field_meta"}, "constraint_types": constraint_types(),
+        "constraints": constraint_details(saved["state"], saved["version"], metadata),
+        "job_facts": {"location": job["location"]},
+    })
 
 
 @router.get("/conversations/{conv_id}/career-context/{job_id}")
 async def get_career_context(conv_id: uuid.UUID, job_id: uuid.UUID, version: int | None = None,
                              user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
-    service = await _career_context(session, user, conv_id, job_id)
-    return success(await service.read(version))
+    service, job = await _career_context(session, user, conv_id, job_id)
+    return _career_context_response(await service.read(version), job)
 
 
 @router.put("/conversations/{conv_id}/career-context/{job_id}")
@@ -55,8 +64,9 @@ async def update_career_context(conv_id: uuid.UUID, job_id: uuid.UUID, body: Car
         for key, value in (body.fields or {}).items()
     ):
         raise BizError("请提供有效的上下文修改或回滚版本", code=400, status_code=400)
-    service = await _career_context(session, user, conv_id, job_id)
-    return success(await service.save(expected=body.expected_version, edits=body.fields, rollback=body.rollback_to))
+    service, job = await _career_context(session, user, conv_id, job_id)
+    saved = await service.save(expected=body.expected_version, edits=body.fields, rollback=body.rollback_to)
+    return _career_context_response(saved, job)
 
 
 # ── 会话管理 ──

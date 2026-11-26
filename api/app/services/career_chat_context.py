@@ -10,15 +10,29 @@ HISTORY_TOKENS = 4200
 SUMMARY_TOKENS = 1100
 CURRENT_TOKENS = 6000
 RECENT_MESSAGES = 8
-_CHANGING_FIELDS = {
-    "复习顺序": re.compile(r"^(?:把)?复习顺序(?:改为|是|调整为|设为)"),
-    "截止时间": re.compile(r"^(?:把)?(?:截止(?:时间|日期)|最后期限)(?:改为|调整为|定为|是|到|为)"),
-    "求职目标": re.compile(
-        r"^(?:我(?:的)?(?:实习方向|求职目标)(?:是|改为|为)|现在(?:我)?决定(?:重点)?投递)"
-    ),
+_FIELD_ALIASES = {
+    "求职目标": r"求职目标|实习方向",
+    "复习顺序": r"复习顺序",
+    "截止时间": r"截止时间|截止日期|最后期限",
+    "意向城市": r"意向城市|求职城市|目标城市",
+    "实习时长": r"实习时长|实习周期",
+    "异地偏好": r"异地偏好|是否接受异地",
+    "简历素材偏好": r"简历素材偏好|简历素材范围",
 }
-_SENTENCES = re.compile(r"(?<=[。！？；])|\n")
-_HISTORICAL_PINNED = re.compile(r"复习顺序|截止时间|截止日期|最后期限|求职目标|实习方向|现在(?:我)?决定(?:重点)?投递")
+_FIELD = "|".join(f"(?:{aliases})" for aliases in _FIELD_ALIASES.values())
+_UPDATE = re.compile(
+    rf"^(?:(?:请|把|我的|我想将|将)\s*)*(?P<field>{_FIELD})\s*(?:调整为|改成|改为|设为|定为|是|到|为)\s*(?P<value>.+)$"
+)
+_CLEAR = re.compile(rf"^(?:请)?(?:取消|清除|删除)(?:我的)?(?P<field>{_FIELD})(?:的?约束|限制)?$")
+_GOAL = re.compile(r"^现在(?:我)?决定(?:重点)?投递(?P<value>.+)$")
+_INTENT = re.compile(r"^(?:请|帮我|给我|能否|能不能|如何|怎么|重新安排|重新制定|生成|创建|总结|解释|查询|执行|按照|根据)")
+_AMBIGUOUS = re.compile(
+    r"[,，]|(?:请|帮我|给我|然后|接着|并且|同时)(?=.{2,})"
+    r"|(?:怎么|如何|重新安排|重新制定|重新生成|创建|执行|总结|解释|查一下)|生成(?=.{0,8}(?:计划|简历|报告))"
+)
+_SENTENCES = re.compile(r"(?<=[。！？；!?;])")
+_CLAUSES = re.compile(r"([，,]\s*|\s*(?:并|同时|然后|接着)(?=请|帮我|给我|重新安排|重新制定|创建|生成|查询))")
+_HISTORICAL_PINNED = re.compile(rf"{_FIELD}|现在(?:我)?决定(?:重点)?投递|(?:不)?接受异地|简历(?:仅|只)用")
 IMPORTANT = re.compile(r"确认|要求|目标|截止|限制|只用|保留|偏好|注意|负责|证据|真实|阶段")
 CONSTRAINT = re.compile(r"确认|只用|请勿|不要|务必|截止时间|限制|目标是|必须|改为")
 
@@ -37,16 +51,82 @@ def clip(text: str, tokens: int) -> str:
 
 
 def sentences(text: str) -> list[str]:
-    return [part.strip() for part in _SENTENCES.split(text[:6000]) if part.strip()]
+    return [part.strip() for line in text[:6000].splitlines() for part in _SENTENCES.split(line) if part.strip()]
 
 
-def constraint_field(text: str) -> str | None:
-    if text.rstrip().endswith(("?", "？")) or re.search(r"(?:是什么|是多久|是哪[天个]|是多少)[。！!\s]*$", text):
+def _constraint_change(clause: str) -> tuple[str, str | None] | None:
+    if clause.rstrip().endswith(("?", "？")):
         return None
-    for field, pattern in _CHANGING_FIELDS.items():
-        if pattern.search(text.strip(" \t-•")):
-            return field
-    return None
+    clause = clause.strip(" \t-•").rstrip("。！!；;").strip()
+    clause = re.sub(r"^确认\s*[:：]\s*", "", clause)
+    match = _CLEAR.fullmatch(clause) or _UPDATE.fullmatch(clause) or _GOAL.fullmatch(clause)
+    if match is None:
+        if clause in {"接受异地", "不接受异地", "我接受异地", "我不接受异地"}:
+            return "异地偏好", clause.removeprefix("我")
+        if re.fullmatch(r"简历(?:只能使用|仅使用|只用)(?:我的)?(?:真实确认经历|已确认经历|真实经历)", clause):
+            return "简历素材偏好", "仅使用已确认经历"
+        return None
+    parts = match.groupdict()
+    alias = parts.get("field")
+    field = next(key for key, aliases in _FIELD_ALIASES.items() if re.fullmatch(aliases, alias)) if alias else "求职目标"
+    value = parts.get("value")
+    if value is None:
+        return field, None
+    value = value.strip()
+    if not value or len(value) > 180 or _AMBIGUOUS.search(value) or value.startswith(("什么", "多久", "哪", "多少")):
+        return None
+    return field, value
+
+
+def _parse_sentence(sentence: str) -> tuple[dict[str, str | None], str]:
+    direct = _constraint_change(sentence)
+    if direct is not None:
+        return dict([direct]), ""
+    parts = _CLAUSES.split(sentence)
+    if len(parts) == 1:
+        return {}, sentence
+    updates = {}
+    remaining = []
+    for offset in range(0, len(parts), 2):
+        clause = parts[offset]
+        following = parts[offset + 2].lstrip() if offset + 2 < len(parts) else ""
+        change = _constraint_change(clause)
+        if change is not None and (not following or _INTENT.match(following) or _constraint_change(following)):
+            updates[change[0]] = change[1]
+        else:
+            if remaining:
+                remaining.append(parts[offset - 1])
+            remaining.append(clause)
+    return (updates, "".join(remaining).strip()) if updates else ({}, sentence)
+
+
+def parse_constraint_request(text: str) -> tuple[dict[str, str | None], str]:
+    """Extract explicit changes, keeping the original request when splitting is uncertain."""
+    updates = {}
+    remainder = []
+    fence = None
+    for line in text.splitlines(keepends=True):
+        marker = line.lstrip()[:3]
+        if marker in {"```", "~~~"}:
+            if fence in (None, marker):
+                fence = marker if fence is None else None
+            remainder.append(line)
+            continue
+        if fence:
+            remainder.append(line)
+            continue
+        for sentence in _SENTENCES.split(line):
+            changes, request = _parse_sentence(sentence)
+            updates.update(changes)
+            remainder.append(request)
+    return updates, "".join(remainder).strip()
+
+
+def normalize_constraint_value(field: str, value: str) -> str | None:
+    changes, _ = parse_constraint_request(value)
+    if field in changes:
+        return changes[field]
+    return None if _UPDATE.match(value.strip()) or _GOAL.match(value.strip()) else value
 
 
 def update_constraints(current: dict, message) -> None:
@@ -57,21 +137,20 @@ def update_constraints(current: dict, message) -> None:
     if not isinstance(statements, dict):
         statements = extract_constraints(message.content)
     for field, value in statements.items():
-        if field in _CHANGING_FIELDS and isinstance(value, str):
-            current[field] = (str(message.id), value)
+        if field in _FIELD_ALIASES and (value is None or isinstance(value, str)):
+            current[field] = (str(message.id), normalize_constraint_value(field, value) if value is not None else None)
 
 
-def extract_constraints(text: str) -> dict[str, str]:
-    result = {}
-    for sentence in sentences(text):
-        field = constraint_field(sentence)
-        if field:
-            result[field] = sentence
-    return result
+def extract_constraints(text: str) -> dict[str, str | None]:
+    return parse_constraint_request(text)[0]
 
 
 def known_constraint_fields() -> set[str]:
-    return set(_CHANGING_FIELDS)
+    return set(_FIELD_ALIASES)
+
+
+def constraint_types() -> list[str]:
+    return list(_FIELD_ALIASES)
 
 
 async def latest_constraints(messages) -> dict:
@@ -82,41 +161,39 @@ async def latest_constraints(messages) -> dict:
             update_constraints(found, message)
             for field, value in found.items():
                 current.setdefault(field, value)
-            if len(current) == len(_CHANGING_FIELDS):
+            if len(current) == len(_FIELD_ALIASES):
                 break
-    return current
+    return {key: value for key, value in current.items() if value[1] is not None}
 
 
-def render_constraints(current: dict) -> str:
-    return json.dumps([
-        {"field": field, "message_id": source, "statement": clip(statement, 100)}
-        for field, (source, statement) in sorted(current.items())
-    ], ensure_ascii=False) if current else ""
+def constraint_details(current: dict, version: int, metadata: dict | None = None) -> list[dict]:
+    return [
+        {"field": field, "source_message_id": source, "value": value, "version": version, "confirmed": version > 0,
+         **(metadata or {}).get(field, {})}
+        for field, (source, value) in current.items() if value is not None
+    ]
 
 
 def effective_content(message, current: dict, *, keep_current: bool = True) -> str:
     removed = False
     kept = []
-    for part in _SENTENCES.split(message.content):
-        sentence = part.strip()
-        if not sentence:
+    for sentence in [part for line in message.content.splitlines() for part in _SENTENCES.split(line) if part.strip()]:
+        updates, request = _parse_sentence(sentence)
+        is_current = keep_current and message.role == "user" and updates and all(
+            tuple(current.get(field, ())) == (str(message.id), value) for field, value in updates.items()
+        )
+        if is_current or (not updates and not _HISTORICAL_PINNED.search(sentence)):
+            kept.append(sentence.strip())
             continue
-        field = constraint_field(sentence)
-        is_current = (keep_current and message.role == "user" and field
-                      and tuple(current.get(field, ())) == (str(message.id), sentence))
-        if (field or _HISTORICAL_PINNED.search(sentence)) and not is_current:
-            removed = True
-        else:
-            kept.append(sentence)
+        removed = True
+        if request != sentence and request:
+            kept.append(request)
     return "\n".join(kept) if removed else message.content
 
 
 def without_constraint_updates(text: str) -> str:
     """Only the stored revision supplies active values, even when regenerating old turns."""
-    return "".join(
-        part for part in re.split(r"(?<=[。！？；])|(\n)", text)
-        if part and not constraint_field(part.strip())
-    ).strip()
+    return parse_constraint_request(text)[1]
 
 
 def turn_content(text: str, attachments: list[dict], budget: int) -> str:

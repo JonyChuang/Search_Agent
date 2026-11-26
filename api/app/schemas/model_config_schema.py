@@ -19,6 +19,7 @@ class ModelConfigCreate(BaseModel):
     api_key: str = Field(min_length=1)
     base_url: str = Field(min_length=1, max_length=255)
     capability: list[str] = Field(default_factory=list)
+    context_window_tokens: int | None = Field(default=None, ge=2048, le=2_000_000)
     is_default: bool = False
 
 
@@ -29,6 +30,7 @@ class ModelConfigUpdate(BaseModel):
     api_key: str | None = None
     base_url: str | None = Field(default=None, max_length=255)
     capability: list[str] | None = None
+    context_window_tokens: int | None = Field(default=None, ge=2048, le=2_000_000)
 
 
 class ModelConfigOut(BaseModel):
@@ -42,6 +44,7 @@ class ModelConfigOut(BaseModel):
     api_key_masked: str  # 掩码，不返回明文
     base_url: str
     capability: list[str]
+    context_window_tokens: int | None = None
     is_default: bool
     created_at: datetime
 

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Form, Input, Modal, Select, Switch } from 'antd'
+import { Form, Input, InputNumber, Modal, Select, Switch } from 'antd'
 import type { ModelConfigItem, ModelConfigPayload, Provider } from '@/api/models'
 import {
   CAPABILITY_OPTIONS,
@@ -37,6 +37,7 @@ export default function ModelConfigModal({
           api_key: '', // 编辑时留空表示不修改
           base_url: editing.base_url,
           capability: editing.capability,
+          context_window_tokens: editing.context_window_tokens ?? null,
           is_default: editing.is_default,
         })
       } else {
@@ -76,6 +77,14 @@ export default function ModelConfigModal({
       >
         <Form.Item name="type" label="模型类型" rules={[{ required: true }]}>
           <Select options={TYPE_OPTIONS} disabled={isEdit} />
+        </Form.Item>
+        <Form.Item noStyle shouldUpdate={(a, b) => a.type !== b.type}>
+          {({ getFieldValue }) => ['chat', 'multimodal'].includes(getFieldValue('type')) &&
+            <Form.Item name="context_window_tokens" label="上下文窗口（Token）"
+              extra="按模型供应商公布的窗口填写。留空使用服务默认值。"
+              rules={[{ type: 'integer', min: 2048, max: 2000000, message: '请输入 2048 至 2000000 的整数' }]}>
+              <InputNumber min={2048} max={2000000} precision={0} style={{ width: '100%' }} />
+            </Form.Item>}
         </Form.Item>
         <Form.Item name="provider" label="供应商" rules={[{ required: true }]}>
           <Select

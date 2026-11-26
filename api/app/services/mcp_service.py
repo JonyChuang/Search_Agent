@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent.tools.mcp.loader import fetch_tools_meta
+from app.core.agent.tools.mcp.reviewed_reads import reviewed_read_for
 from app.core.agent.tools.mcp.tool_cache import invalidate_descriptors
 from app.core.exceptions import BizError
 from app.core.logging import get_logger
@@ -117,10 +118,13 @@ class MCPService:
 
     async def set_permissions(self, user_id: uuid.UUID, server_id: uuid.UUID, tools: dict) -> MCPServer:
         server = await self._get_or_404(user_id, server_id)
-        available = {tool["name"] for tool in (server.tools_cache or [])}
-        if not tools.keys() <= available:
+        available = {tool["name"]: tool.get("schemaDigest") for tool in (server.tools_cache or [])}
+        if not tools.keys() <= available.keys():
             raise BizError("请先同步工具清单，再授权清单中的工具", code=4055)
-        server.tool_permissions = tools
+        server.tool_permissions = {
+            name: ("confirm" if mode == "reviewed_read" and not reviewed_read_for(server, name, available[name]) else mode)
+            for name, mode in tools.items()
+        }
         saved = await self.repo.save(server)
         await self._invalidate_cache(user_id)
         return saved
@@ -222,6 +226,11 @@ class MCPService:
             "last_error": server.last_error,
             "tools_cache": server.tools_cache or [],
             "tool_permissions": server.tool_permissions or {},
+            "reviewed_reads": {
+                tool["name"]: policy.expires_at.isoformat()
+                for tool in (server.tools_cache or [])
+                if (policy := reviewed_read_for(server, tool["name"], tool.get("schemaDigest")))
+            },
             "synced_at": server.synced_at.isoformat() if server.synced_at else None,
             "created_at": server.created_at.isoformat(),
         }

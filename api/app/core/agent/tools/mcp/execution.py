@@ -11,6 +11,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from redis.exceptions import RedisError
 
 from app.core.agent.tools.mcp.connection import build_connection
+from app.core.agent.tools.mcp.reviewed_reads import reviewed_read_for
 from app.core.exceptions import BizError
 from app.core.security import decrypt_secret, encrypt_secret
 from app.db.postgres import SessionLocal
@@ -20,6 +21,7 @@ from app.repositories.mcp_server_repository import MCPServerRepository
 logger = logging.getLogger(__name__)
 _TTL = 300
 _MAX_PENDING = 20
+_READS_PER_MINUTE = 20
 
 
 def schema_digest(schema: dict) -> str:
@@ -28,6 +30,18 @@ def schema_digest(schema: dict) -> str:
 
 def _reviewed_schema(server, name: str) -> str | None:
     return next((item.get("schemaDigest") for item in (server.tools_cache or []) if item["name"] == name), None)
+
+
+async def _reviewed_read_quota(user_id: UUID, server_id: UUID, tool: str) -> bool:
+    key = f"mcp:reviewed-read:{user_id}:{server_id}:{tool}"
+    try:
+        async with asyncio.timeout(1), get_redis().pipeline(transaction=True) as pipe:
+            pipe.incr(key)
+            pipe.expire(key, 60, nx=True)
+            count, _ = await pipe.execute()
+        return count <= _READS_PER_MINUTE
+    except (RedisError, TimeoutError):
+        return False
 
 
 def _queue(user_id: UUID) -> str:
@@ -105,7 +119,7 @@ class ToolExecutionGuard:
         async with SessionLocal() as session:
             server = await MCPServerRepository(session).get(user_id, server_id)
             mode = (server.tool_permissions or {}).get(tool) if server and server.enabled else None
-            reviewed = _reviewed_schema(server, tool) if mode in {"read", "confirm"} else None
+            reviewed = _reviewed_schema(server, tool) if mode in {"read", "confirm", "reviewed_read"} else None
             if (not reviewed or (expected_schema is not None and expected_schema != reviewed)
                     or (revision is not None and (revision != str(server.updated_at) or expected_schema != reviewed))):
                 logger.info("tool authorization denied owner=%s server=%s tool=%s", user_id, server_id, tool)
@@ -116,10 +130,17 @@ class ToolExecutionGuard:
     async def invoke_mcp(cls, user_id: UUID, server_id: UUID, tool: str, arguments: dict, *,
                          approved_revision=None, expected_schema=None):
         server = await cls._authorized_server(user_id, server_id, tool, approved_revision, expected_schema)
-        # Every external server is untrusted for side effects, including existing `read` grants.
+        auto_reviewed = False
         if approved_revision is None:
-            approval = await _request_approval(user_id, server, tool, arguments)
-            return f"工具尚未执行。请在工具配置的 MCP 待确认区域查看并审批请求 {approval}。"
+            policy = None
+            if server.tool_permissions.get(tool) == "reviewed_read":
+                expected_schema = _reviewed_schema(server, tool)
+                policy = reviewed_read_for(server, tool, expected_schema)
+            if not policy or not policy.accepts(arguments) or not await _reviewed_read_quota(user_id, server_id, tool):
+                approval = await _request_approval(user_id, server, tool, arguments)
+                return f"工具尚未执行。请在工具配置的 MCP 待确认区域查看并审批请求 {approval}。"
+            auto_reviewed = True
+            approved_revision = str(server.updated_at)
         try:
             connection = build_connection(server)
             async with asyncio.timeout(45):
@@ -135,7 +156,11 @@ class ToolExecutionGuard:
                             break
                     if matching is None or schema_digest(matching.inputSchema) != expected_schema:
                         raise BizError("远程工具定义已变更，请重新同步后发起审批", code=409, status_code=409)
-                    await cls._authorized_server(user_id, server_id, tool, approved_revision, expected_schema)
+                    current = await cls._authorized_server(user_id, server_id, tool, approved_revision, expected_schema)
+                    if auto_reviewed:
+                        policy = reviewed_read_for(current, tool, expected_schema)
+                        if not policy or not policy.accepts(arguments) or current.tool_permissions.get(tool) != "reviewed_read":
+                            raise BizError("MCP 只读预授权已变更，请重新发起请求", code=403, status_code=403)
                     result = await remote.call_tool(tool, arguments)
         except BizError:
             raise
@@ -143,7 +168,8 @@ class ToolExecutionGuard:
             logger.warning("MCP call failed owner=%s server=%s tool=%s type=%s", user_id, server_id, tool,
                            type(error).__name__)
             raise BizError("无法确认 MCP 操作结果，请检查远程服务状态", code=502, status_code=502) from None
-        logger.info("MCP call completed owner=%s server=%s tool=%s error=%s", user_id, server_id, tool, result.isError)
+        logger.info("MCP call completed owner=%s server=%s tool=%s mode=%s error=%s", user_id, server_id, tool,
+                    "reviewed_read" if auto_reviewed else "confirmed", result.isError)
         if result.isError:
             raise BizError("远程 MCP 工具返回执行错误", code=502, status_code=502)
         return result.model_dump(mode="json", by_alias=True)

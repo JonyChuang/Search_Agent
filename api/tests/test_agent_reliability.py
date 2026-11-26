@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,12 +15,73 @@ from app.core.rag import search
 from app.core.rag.chunker import count_tokens
 from app.core.rag.search import _distinct_candidates
 from app.schemas.chat_schema import ChatStreamRequest
+from app.schemas.mcp_schema import ReviewedMCPRead
 from app.services import career_worker, chat_service
-from app.services.career_chat_context import effective_content, summarize, without_constraint_updates
+from app.services.career_chat_context import effective_content, parse_constraint_request, summarize, without_constraint_updates
+from app.services.career_context import CareerContextTooLarge
+from app.services.career_task_service import check_model_budget, create_training_plan
 from eval.career_workflow_eval import run
 
 
 class AgentReliabilityTest(IsolatedAsyncioTestCase):
+    def test_mixed_and_uncertain_constraint_requests(self):
+        examples = [
+            ("截止时间是周五。", {"截止时间": "周五"}, ""),
+            ("截止时间改为周五，怎么安排复习？", {"截止时间": "周五"}, "怎么安排复习？"),
+            ("截止时间改为周五，请按照新的截止时间重新安排我的训练计划。",
+             {"截止时间": "周五"}, "请按照新的截止时间重新安排我的训练计划。"),
+            ("取消截止时间，请继续练习。", {"截止时间": None}, "请继续练习。"),
+            ("意向城市改为北京、杭州，实习时长设为三个月，不接受异地。",
+             {"意向城市": "北京、杭州", "实习时长": "三个月", "异地偏好": "不接受异地"}, ""),
+            ("截止时间改为周五还是下周一？", {}, "截止时间改为周五还是下周一？"),
+            ("截止时间改为周五重新安排训练计划。", {}, "截止时间改为周五重新安排训练计划。"),
+            ("简历只能使用真实确认经历。", {"简历素材偏好": "仅使用已确认经历"}, ""),
+        ]
+        for message, changes, request in examples:
+            with self.subTest(message=message):
+                self.assertEqual(parse_constraint_request(message), (changes, request))
+
+    async def test_reviewed_mcp_requires_independent_scoped_policy_and_exact_arguments(self):
+        owner, server_id = uuid4(), uuid4()
+        schema = {"type": "object"}
+        digest = execution.schema_digest(schema)
+        server = SimpleNamespace(
+            user_id=owner, id=server_id, url="https://catalog.example.test/mcp", enabled=True,
+            transport="streamable_http", auth_type="none", auth_config=None, updated_at="r1",
+            tool_permissions={"catalog": "reviewed_read"}, tools_cache=[{"name": "catalog", "schemaDigest": digest}],
+        )
+        grant = ReviewedMCPRead(
+            user_id=owner, server_id=server_id, url=server.url, tool="catalog", schema_digest=digest,
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10), arguments={"view": ["public"], "page": [1]},
+        )
+        remote = AsyncMock()
+        remote.list_tools.return_value = SimpleNamespace(
+            tools=[SimpleNamespace(name="catalog", inputSchema=schema)], nextCursor=None,
+        )
+        remote.call_tool.return_value = SimpleNamespace(isError=False, model_dump=lambda **_: {"status": "ok"})
+        adapter = MagicMock()
+        adapter.session.return_value.__aenter__.return_value = remote
+        with (patch.object(chat_service.settings, "mcp_reviewed_reads", [grant]),
+              patch.object(execution.MCPServerRepository, "get", new=AsyncMock(return_value=server)),
+              patch.object(execution, "_reviewed_read_quota", new=AsyncMock(return_value=True)) as quota,
+              patch.object(execution, "_request_approval", new=AsyncMock(return_value=uuid4())) as request,
+              patch.object(execution, "build_connection"),
+              patch.object(execution, "MultiServerMCPClient", return_value=adapter)):
+            arguments = {"view": "public", "page": 1}
+            result = await execution.ToolExecutionGuard.invoke_mcp(owner, server_id, "catalog", arguments)
+            self.assertEqual(result, {"status": "ok"})
+            quota.assert_awaited_once()
+            for invalid in ({"view": "private", "page": 1}, {"view": "public", "page": True},
+                            {"view": "public", "page": 1, "extra": "value"}):
+                self.assertIn("尚未执行", await execution.ToolExecutionGuard.invoke_mcp(owner, server_id, "catalog", invalid))
+            expired = grant.model_copy(update={"expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)})
+            with patch.object(chat_service.settings, "mcp_reviewed_reads", [expired]):
+                self.assertIn("尚未执行", await execution.ToolExecutionGuard.invoke_mcp(owner, server_id, "catalog", arguments))
+            with patch.object(chat_service.settings, "mcp_reviewed_reads", [grant.model_copy(update={"user_id": uuid4()})]):
+                self.assertIn("尚未执行", await execution.ToolExecutionGuard.invoke_mcp(owner, server_id, "catalog", arguments))
+            self.assertEqual(request.await_count, 5)
+            remote.call_tool.assert_awaited_once_with("catalog", arguments)
+
     async def test_sensitive_mcp_call_cannot_run_before_owner_confirmation(self):
         user, ident, approval = uuid4(), uuid4(), uuid4()
         digest = execution.schema_digest({"type": "object"})
@@ -122,12 +184,15 @@ class AgentReliabilityTest(IsolatedAsyncioTestCase):
         service._history_messages = AsyncMock(return_value=[])
         service._stream_multimodal = MagicMock()
         body = ChatStreamRequest(message="analyze the image", image_keys=["image-fixture"])
-        with (patch.object(chat_service, "build_default_chat_model", new=AsyncMock(return_value=(None, None))),
-              patch.object(chat_service.settings, "chat_context_window", 3000),
-              patch.object(chat_service.settings, "chat_reserved_output", 512)):
+        vision = SimpleNamespace(model_name="vision-fixture", context_window_tokens=3000)
+        with (patch.object(chat_service, "get_default_config_for_type", new=AsyncMock(return_value=vision)) as select,
+              patch.object(chat_service, "build_chat_model", return_value=SimpleNamespace()),
+              patch.object(chat_service, "build_default_chat_model", new=AsyncMock()) as text_model):
             events = [event async for event in service._generate_events(
                 uuid4(), SimpleNamespace(id=uuid4()), body, [], [],
             )]
+        self.assertEqual(select.await_args.args[2], "multimodal")
+        text_model.assert_not_awaited()
         self.assertIn("超出上下文预算", events[0]["text"])
         service._stream_multimodal.assert_not_called()
 
@@ -207,6 +272,13 @@ class AgentReliabilityTest(IsolatedAsyncioTestCase):
         self.assertEqual(result["task_success"], [4, 4])
         self.assertEqual(result["correct_tool_calls"], [4, 6])
         self.assertEqual(result["checkpoint_recovery"], [2, 2])
+        self.assertEqual(result["deadline_mentioned_in_steps"], [2, 2])
+
+    def test_configured_worker_budget_counts_tool_schema_before_provider_call(self):
+        messages = [HumanMessage(content="fixture input " * 1500)]
+        with self.assertRaises(CareerContextTooLarge):
+            check_model_budget(2048, messages, create_training_plan)
+        check_model_budget(8192, messages, create_training_plan)
 
     def test_parent_coverage_is_scoped_by_document_and_knowledge_base(self):
         shared = {"source_id": "doc-a", "kb_id": "kb-a", "parent_id": "parent-a"}

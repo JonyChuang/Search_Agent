@@ -3,7 +3,8 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+import httpx
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 TransportT = Literal["sse", "streamable_http"]
 AuthTypeT = Literal["none", "bearer", "api_key"]
@@ -34,7 +35,58 @@ class MCPServerToggle(BaseModel):
 
 
 class MCPToolPermissions(BaseModel):
-    tools: dict[str, Literal["read", "confirm"]] = Field(max_length=200)
+    tools: dict[str, Literal["read", "confirm", "reviewed_read"]] = Field(max_length=200)
+
+
+Scalar = StrictStr | StrictInt | StrictBool | None
+
+
+class ReviewedMCPRead(BaseModel):
+    """Deployment configuration for an independently reviewed read-only MCP tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: uuid.UUID
+    server_id: uuid.UUID
+    url: str
+    tool: str = Field(min_length=1, max_length=128)
+    schema_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expires_at: datetime
+    arguments: dict[str, list[Scalar]] = Field(max_length=12)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value):
+        try:
+            url = httpx.URL(value)
+        except httpx.InvalidURL:
+            raise ValueError("Invalid MCP URL") from None
+        if url.scheme != "https" or not url.host or url.userinfo or url.query or url.fragment:
+            raise ValueError("Reviewed MCP endpoints require an exact HTTPS URL without credentials or query")
+        return str(url)
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_timezone(cls, value):
+        if value.utcoffset() is None:
+            raise ValueError("A reviewed MCP grant requires a timezone-aware expiry")
+        return value
+
+    @field_validator("arguments")
+    @classmethod
+    def limit_arguments(cls, value):
+        for key, choices in value.items():
+            if not 1 <= len(key) <= 80 or not 1 <= len(choices) <= 30 or any(
+                isinstance(choice, str) and len(choice) > 180 for choice in choices
+            ):
+                raise ValueError("Reviewed MCP parameters require a small, explicit list of values")
+        return value
+
+    def accepts(self, arguments: dict) -> bool:
+        return arguments.keys() == self.arguments.keys() and all(
+            any(type(value) is type(allowed) and value == allowed for allowed in self.arguments[key])
+            for key, value in arguments.items()
+        )
 
 
 class MCPApprovalDecision(BaseModel):

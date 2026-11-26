@@ -10,6 +10,9 @@ export interface CareerContextState {
   version: number
   state: Record<string, [string | null, string]>
   source: string
+  constraint_types?: string[]
+  constraints?: { field: string; value: string; source_message_id: string | null; version: number; confirmed: boolean }[]
+  job_facts?: { location: string | null }
 }
 
 export const careerContextApi = {
