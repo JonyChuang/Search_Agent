@@ -3,11 +3,12 @@
 import asyncio
 import logging
 import re
+import signal
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from openai import RateLimitError
+from openai import APIConnectionError, RateLimitError
 from sqlalchemy import text
 
 from app.core.agent.tracing import get_tracer
@@ -150,6 +151,7 @@ async def run_claimed(row: dict) -> None:
 
 async def _run_claimed(row: dict) -> str:
     result, error = row["training_draft_json"], None
+    transient = False
     if result is None:
         try:
             run = CareerRun(
@@ -171,6 +173,7 @@ async def _run_claimed(row: dict) -> str:
             logger.warning("Career task %s generation %s failed: %s",
                            row["id"], row["generation"], type(exception).__name__)
             result, error = None, _display_error(exception)
+            transient = isinstance(exception, (TimeoutError, APIConnectionError, RateLimitError))
     async with career_transaction() as connection:
         queue = CareerQueue(connection)
         if row["kind"] == "TRAINING":
@@ -180,6 +183,8 @@ async def _run_claimed(row: dict) -> str:
                 return "STALE"
             result = current["training_draft_json"]
             error = None if result is not None else error or "Agent 未生成训练计划"
+        if error and transient and await queue.retry_transient(row):
+            return "RETRY_QUEUED"
         if row["kind"] == "INTERVIEW_TURN" and error is None:
             interviews = CareerInterviews(CareerRecords(connection, row["user_id"]))
             session = await interviews.find(row["request_json"]["sessionId"], lock=True)
@@ -228,8 +233,103 @@ async def poll_career_queue() -> None:
             async with career_transaction() as connection:
                 row = await CareerQueue(connection).claim((*sorted(PUBLIC_KINDS), "INTERVIEW_TURN"))
             if row is not None:
-                await run_claimed(row)
+                await supervise(row)
                 continue
         except Exception:
             logger.exception("Career worker iteration failed")
         await asyncio.sleep(1)
+
+
+async def supervise(row: dict) -> None:
+    async def maintain_lease():
+        while True:
+            await asyncio.sleep(20)
+            async with career_transaction() as connection:
+                if not await CareerQueue(connection).renew(row):
+                    return
+
+    runner = asyncio.create_task(run_claimed(row))
+    heartbeat = asyncio.create_task(maintain_lease())
+    try:
+        done, _ = await asyncio.wait((runner, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+        if runner in done:
+            await runner
+        else:
+            await heartbeat
+            logger.warning("Career worker lost lease task=%s generation=%s", row["id"], row["generation"])
+    except asyncio.CancelledError:
+        runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+        try:
+            async with career_transaction() as connection:
+                await CareerQueue(connection).release(row)
+        except Exception:
+            logger.warning("Career lease will expire after shutdown task=%s", row["id"])
+        raise
+    finally:
+        runner.cancel()
+        heartbeat.cancel()
+        await asyncio.gather(runner, heartbeat, return_exceptions=True)
+
+
+async def monitor_queue() -> None:
+    while True:
+        try:
+            async with career_transaction() as connection:
+                rows = await connection.execute(text("""
+                    SELECT COUNT(CASE WHEN status = 'QUEUED' THEN 1 END) AS queued,
+                        COUNT(CASE WHEN status = 'RUNNING' AND lease_until <= CURRENT_TIMESTAMP(6) THEN 1 END) AS expired,
+                        COALESCE(MAX(CASE WHEN status = 'QUEUED' THEN
+                            TIMESTAMPDIFF(SECOND, queued_at, CURRENT_TIMESTAMP(6)) END), 0) AS oldest
+                    FROM career_task WHERE status IN ('RUNNING', 'QUEUED')
+                """))
+                queued, expired, oldest = rows.one()
+            log = logger.warning if expired or oldest > 300 else logger.info
+            log("Career queue queued=%s expired_leases=%s oldest_wait_seconds=%s", queued, expired, max(0, oldest))
+        except Exception as error:
+            logger.warning("Career queue monitoring unavailable type=%s", type(error).__name__)
+        await asyncio.sleep(60)
+
+
+def start_workers() -> list[asyncio.Task]:
+    from app.controllers.career_content_controller import curators, feed_schedule, poll_feeds
+    from app.controllers.career_judge_controller import configured_url, poll_judge
+    from app.services.career_reminders import poll_reminders
+
+    curators()
+    feeds = feed_schedule()
+    judge = configured_url()
+    workers = [asyncio.create_task(poll_career_queue()) for _ in range(4)]
+    workers.extend(asyncio.create_task(run()) for run in (poll_interview_recovery, poll_reminders, monitor_queue))
+    if judge:
+        workers.extend(asyncio.create_task(poll_judge()) for _ in range(2))
+    if feeds:
+        workers.append(asyncio.create_task(poll_feeds()))
+    return workers
+
+
+async def _main():
+    from app.core.agent.tracing.span_recorder import get_recorder
+    from app.db import career, elastic, neo4j, postgres, redis
+
+    await career.verify_career_schema()
+    await get_recorder().start()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stop.set))
+    workers = [asyncio.create_task(stop.wait()), *start_workers()]
+    try:
+        done, _ = await asyncio.wait(workers, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            await task
+    finally:
+        for task in workers:
+            task.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        await get_recorder().stop()
+        await asyncio.gather(career.close(), elastic.close(), neo4j.close(), postgres.close(), redis.close())
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

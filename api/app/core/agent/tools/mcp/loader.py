@@ -10,10 +10,12 @@
 故对 server 名与 MCP 原始工具名统一清洗（非法字符替换为 _），并去重。
 """
 import asyncio
+import json
 import re
 import time
 import uuid
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
+from hashlib import sha256
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -22,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.agent.tools.mcp.connection import CONNECT_TIMEOUT, build_connection
+from app.core.agent.tools.mcp.execution import ToolExecutionGuard
 from app.core.agent.tools.mcp.tool_cache import load_descriptors
 from app.core.logging import get_logger
 from app.models.mcp_server_model import MCPServer
@@ -54,6 +57,11 @@ def _sanitize(text: str) -> str:
     """清洗为合法工具名片段：非法字符→_，去首尾下划线；空则回退 'mcp'。"""
     cleaned = _INVALID.sub("_", text).strip("_")
     return cleaned or "mcp"
+
+
+def _schema_digest(tool: BaseTool) -> str:
+    schema = tool.args_schema if isinstance(tool.args_schema, dict) else tool.get_input_schema().model_json_schema()
+    return sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
 
 
 async def _load_raw_tools(server: MCPServer) -> list[BaseTool]:
@@ -116,10 +124,23 @@ def _collect_renamed(
     seen: set[str] = set()
     for server, raw in items:
         prefix = _sanitize(server.name)
+        reviewed = {tool["name"]: tool.get("schemaDigest") for tool in (server.tools_cache or [])}
         for t in raw:
-            _rename(t, prefix, seen)
-            tools.append(t)
+            original = t.name
+            if original not in (server.tool_permissions or {}) or reviewed.get(original) != _schema_digest(t):
+                continue
+            guarded = t.model_copy(update={"coroutine": _guarded_call(server.user_id, server.id, original),
+                                           "response_format": "content",
+                                           "metadata": {**(t.metadata or {}), "mcp_guarded": True}})
+            _rename(guarded, prefix, seen)
+            tools.append(guarded)
     return tools
+
+
+def _guarded_call(user_id: uuid.UUID, server_id: uuid.UUID, tool_name: str):
+    async def invoke(**arguments):
+        return await ToolExecutionGuard.invoke_mcp(user_id, server_id, tool_name, arguments)
+    return invoke
 
 
 async def build_mcp_tools(
@@ -133,6 +154,7 @@ async def build_mcp_tools(
     servers = await MCPServerRepository(session).list_by_user(
         user_id, enabled_only=True
     )
+    servers = [server for server in servers if server.tool_permissions]
     if not servers:
         return []
 
@@ -157,7 +179,7 @@ async def build_mcp_tools(
                 if isinstance(result, TimeoutError)
                 else result
             )
-            logger.warning("加载 MCP 工具失败（跳过）: %s: %s", server.name, err)
+            logger.warning("加载 MCP 工具失败（跳过）: %s: %s", server.name, type(err).__name__)
             continue
         ok_items.append((server, result))
 
@@ -181,80 +203,10 @@ async def build_mcp_tools(
     return tools
 
 
-async def _open_one_server(
-    server: MCPServer,
-) -> tuple[AsyncExitStack, MCPServer, list[BaseTool]] | None:
-    """并行打开单个 server 的持久会话；失败返回 None 并自行清理。"""
-    local = AsyncExitStack()
-    try:
-        conn = build_connection(server)
-        client = MultiServerMCPClient({str(server.id): conn})
-        mcp_session = await asyncio.wait_for(
-            local.enter_async_context(client.session(str(server.id))),
-            timeout=_MCP_LOAD_TIMEOUT,
-        )
-        raw = await asyncio.wait_for(
-            load_mcp_tools(mcp_session), timeout=_MCP_LOAD_TIMEOUT
-        )
-        return local, server, raw
-    except Exception as e:
-        err = (
-            f"超时(>{_MCP_LOAD_TIMEOUT:.0f}s)"
-            if isinstance(e, TimeoutError)
-            else e
-        )
-        logger.warning("打开 MCP 会话失败（跳过）: %s: %s", server.name, err)
-        try:
-            await local.aclose()
-        except Exception as close_err:  # noqa: BLE001
-            logger.warning("关闭失败的 MCP 会话出错（忽略）: %s", close_err)
-        return None
-
-
 @asynccontextmanager
 async def open_mcp_tools(session: AsyncSession, user_id: uuid.UUID):
-    """打开该用户所有已启用 MCP server 的「持久会话」并产出工具（上下文管理器）。
-
-    与 build_mcp_tools 的区别：build_mcp_tools 产出的工具每次调用都新建连接+握手；
-    本函数对每个 server 开一条**活着的 ClientSession**（整段 with 期间保持），其工具的
-    每次调用都复用这条会话，不再重复握手——大幅降低多次工具调用的累计延迟。
-
-    多 server 并行开会话；单个失败跳过。退出时统一关闭。
-    """
-    servers = await MCPServerRepository(session).list_by_user(
-        user_id, enabled_only=True
-    )
-    stack = AsyncExitStack()
-    await stack.__aenter__()
-    try:
-        opened: list[tuple[AsyncExitStack, MCPServer, list[BaseTool]]] = []
-        if servers:
-            started = time.monotonic()
-            results = await asyncio.gather(
-                *[_open_one_server(s) for s in servers],
-            )
-            for item in results:
-                if item is None:
-                    continue
-                local, server, raw = item
-                # 把子 stack 的清理挂到父 stack，with 结束时一并关闭
-                stack.push_async_callback(local.aclose)
-                opened.append((local, server, raw))
-            logger.info(
-                "MCP 持久会话并行打开完成: user=%s servers=%d ok=%d elapsed=%.2fs",
-                user_id,
-                len(servers),
-                len(opened),
-                time.monotonic() - started,
-            )
-
-        tools = _collect_renamed([(s, raw) for _, s, raw in opened])
-        yield tools
-    finally:
-        try:
-            await stack.aclose()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("关闭 MCP 会话出错（忽略）: %s", e)
+    """Share the same guarded tools in chat and group workflows."""
+    yield await build_mcp_tools(session, user_id)
 
 
 def invalidate_mcp_cache(user_id: uuid.UUID | str | None = None) -> None:
@@ -272,7 +224,8 @@ async def fetch_tools_meta(server: MCPServer) -> list[dict]:
     """
     tools = await _load_raw_tools_timed(server)
     return [
-        {"name": t.name, "description": (t.description or "")[:500]}
+        {"name": t.name, "description": (t.description or "")[:500],
+         "schemaDigest": _schema_digest(t)}
         for t in tools
     ]
 

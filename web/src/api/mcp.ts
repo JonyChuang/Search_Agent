@@ -8,6 +8,15 @@ interface Wrapped<T> {
 
 export type McpTransport = 'sse' | 'streamable_http'
 export type McpAuthType = 'none' | 'bearer' | 'api_key'
+export type McpPermission = 'read' | 'confirm'
+
+export interface McpApproval {
+  id: string
+  server: string
+  tool: string
+  arguments: Record<string, unknown>
+  expiresAt: number
+}
 
 export interface McpToolMeta {
   name: string
@@ -25,6 +34,7 @@ export interface McpServer {
   status: string
   last_error: string | null
   tools_cache: McpToolMeta[]
+  tool_permissions: Record<string, McpPermission>
   synced_at: string | null
   created_at: string
 }
@@ -45,6 +55,15 @@ export interface McpTestResult {
 }
 
 export const mcpApi = {
+  approvals() {
+    return client.get<unknown, Wrapped<McpApproval[]>>('/tools/mcp/approvals')
+  },
+  decide(id: string, approve: boolean) {
+    return client.post<unknown, Wrapped<unknown>>(`/tools/mcp/approvals/${id}`, { approve })
+  },
+  permissions(id: string, tools: Record<string, McpPermission>) {
+    return client.put<unknown, Wrapped<McpServer>>(`/tools/mcp/${id}/permissions`, { tools })
+  },
   list() {
     return client.get<unknown, Wrapped<McpServer[]>>('/tools/mcp')
   },

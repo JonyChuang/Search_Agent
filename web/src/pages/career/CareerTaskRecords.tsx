@@ -18,7 +18,7 @@ const taskTypes: { kind: TaskKind; title: string }[] = [
 
 type Metric = { kind: string; status: string; taskCount: number; recordedSteps: number; stepMilliseconds: number;
   measuredInputs: number; inputTokens: number; outputTokens: number;
-  failedSteps?: number; resumedTasks?: number; adaptedPlans?: number }
+  failedSteps?: number; resumedTasks?: number; adaptedPlans?: number; p95StepMilliseconds?: number | null }
 
 function TaskMetrics({ jobId }: { jobId?: string }) {
   const load = useCallback(async (signal: AbortSignal) => (await client.get<unknown, { data: Metric[] }>(
@@ -29,10 +29,18 @@ function TaskMetrics({ jobId }: { jobId?: string }) {
   const sum = (key: Exclude<keyof Metric, 'kind' | 'status'>) =>
     items.reduce((total, item) => total + (item[key] ?? 0), 0)
   const stateCount = (state: string) => items.filter((item) => item.status === state).reduce((total, item) => total + item.taskCount, 0)
+  const finished = stateCount('SUCCEEDED') + stateCount('FAILED')
+  const recovered = items.filter((item) => item.status === 'SUCCEEDED').reduce((total, item) => total + (item.resumedTasks ?? 0), 0)
+  const recoveryTotal = recovered + items.filter((item) => item.status === 'FAILED')
+    .reduce((total, item) => total + (item.resumedTasks ?? 0), 0)
+  const trainingP95 = items.find((item) => item.kind === 'TRAINING' && item.status === 'SUCCEEDED')?.p95StepMilliseconds
   return query.data ? <Space wrap>
     <Tag>共 {sum('taskCount')} 项</Tag><Tag color="success">完成 {stateCount('SUCCEEDED')}</Tag>
     <Tag color="error">失败 {stateCount('FAILED')}</Tag><Tag>取消 {stateCount('CANCELLED')}</Tag>
     <Tag>记录 {sum('recordedSteps')} 个执行步骤</Tag>
+    {finished > 0 && <Tag>已结束任务失败率 {(100 * stateCount('FAILED') / finished).toFixed(1)}%</Tag>}
+    {recoveryTotal > 0 && <Tag>已结束恢复任务成功率 {(100 * recovered / recoveryTotal).toFixed(1)}%</Tag>}
+    {trainingP95 != null && <Tag>成功备考步骤 P95 {(trainingP95 / 1000).toFixed(2)} 秒</Tag>}
     {!!sum('failedSteps') && <Tag>失败步骤 {sum('failedSteps')}</Tag>}
     {!!sum('resumedTasks') && <Tag>从检查点继续 {sum('resumedTasks')} 项</Tag>}
     {!!sum('adaptedPlans') && <Tag>根据练习反馈安排新题 {sum('adaptedPlans')} 份</Tag>}

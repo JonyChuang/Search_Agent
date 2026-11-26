@@ -5,17 +5,39 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
+from app.core.agent.tools.mcp.execution import decide_approval, pending_approvals
 from app.core.response import success
 from app.db.postgres import get_session
 from app.models.user_model import User
 from app.schemas.mcp_schema import (
+    MCPApprovalDecision,
     MCPServerCreate,
     MCPServerToggle,
     MCPServerUpdate,
+    MCPToolPermissions,
 )
 from app.services.mcp_service import MCPService
 
 router = APIRouter(prefix="/tools/mcp", tags=["mcp"])
+
+
+@router.get("/approvals")
+async def list_approvals(user: User = Depends(get_current_user)):
+    return success(await pending_approvals(user.id))
+
+
+@router.post("/approvals/{request_id}")
+async def resolve_approval(request_id: uuid.UUID, body: MCPApprovalDecision, user: User = Depends(get_current_user)):
+    return success(await decide_approval(user.id, request_id, body.approve))
+
+
+@router.put("/{server_id}/permissions")
+async def set_permissions(
+    server_id: uuid.UUID, body: MCPToolPermissions, user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    service = MCPService(session)
+    return success(service.to_out_dict(await service.set_permissions(user.id, server_id, body.tools)))
 
 
 @router.get("")

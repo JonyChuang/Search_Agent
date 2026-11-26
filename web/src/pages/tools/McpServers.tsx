@@ -29,7 +29,9 @@ import {
 } from '@ant-design/icons'
 import {
   mcpApi,
+  type McpApproval,
   type McpAuthType,
+  type McpPermission,
   type McpServer,
   type McpServerInput,
   type McpToolMeta,
@@ -64,6 +66,44 @@ export default function McpServers() {
   const authType = Form.useWatch('auth_type', form)
   // 工具清单抽屉（默认关闭）
   const [toolsDrawer, setToolsDrawer] = useState<McpServer | null>(null)
+  const [approvals, setApprovals] = useState<McpApproval[] | null>(null)
+
+  const loadApprovals = async () => {
+    try {
+      setApprovals((await mcpApi.approvals()).data)
+    } catch (e) {
+      message.error((e as Error).message)
+    }
+  }
+
+  const decide = async (id: string, approved: boolean) => {
+    setBusy(id)
+    try {
+      await mcpApi.decide(id, approved)
+      message.success(approved ? '工具操作已完成' : '已拒绝工具操作')
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(null)
+      void loadApprovals()
+    }
+  }
+
+  const changePermission = async (server: McpServer, tool: string, policy: McpPermission | 'none') => {
+    const permissions = { ...server.tool_permissions }
+    if (policy === 'none') delete permissions[tool]
+    else permissions[tool] = policy
+    setBusy(server.id)
+    try {
+      const { data } = await mcpApi.permissions(server.id, permissions)
+      setToolsDrawer(data)
+      setServers((prev) => prev.map((item) => item.id === data.id ? data : item))
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
 
   const load = async () => {
     setLoading(true)
@@ -192,6 +232,17 @@ export default function McpServers() {
 
   const toolColumns = [
     {
+      title: '执行权限',
+      key: 'permission',
+      render: (_: unknown, tool: McpToolMeta) => toolsDrawer && <Select
+        value={toolsDrawer.tool_permissions?.[tool.name] ?? 'none'}
+        disabled={busy === toolsDrawer.id}
+        onChange={(policy: McpPermission | 'none') => void changePermission(toolsDrawer, tool.name, policy)}
+        options={[{ value: 'none', label: '禁止' }, { value: 'read', label: '信任为只读' },
+          { value: 'confirm', label: '每次确认' }]}
+      />,
+    },
+    {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
@@ -224,14 +275,30 @@ export default function McpServers() {
       }
       loading={loading}
       extra={
+        <Space><Button onClick={() => void loadApprovals()}>待确认操作</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
           添加服务
-        </Button>
+        </Button></Space>
       }
     >
       <Paragraph type="secondary" style={{ marginTop: -8 }}>
-        接入外部 MCP 服务（远程 SSE / Streamable HTTP），同步其工具后，启用的服务工具会自动加入对话 Agent 可调用范围。
+        同步工具后，在工具清单中授权。只对你确认可信且只读的工具选择「信任为只读」，其余工具使用「每次确认」。
       </Paragraph>
+      <Drawer title="待确认工具操作" open={approvals !== null} onClose={() => setApprovals(null)} width={560}>
+        <Button onClick={() => void loadApprovals()}>刷新</Button>
+        <List dataSource={approvals ?? []} locale={{ emptyText: '暂无待确认操作' }} renderItem={(item) => <List.Item>
+          <Space direction="vertical" style={{ maxWidth: '100%' }}>
+            <Text strong>{item.server} · {item.tool}</Text>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(item.arguments, null, 2)}</pre>
+            <Space>
+              <Popconfirm title="确认执行此远程操作？" onConfirm={() => decide(item.id, true)}>
+                <Button type="primary" disabled={busy === item.id}>确认执行</Button>
+              </Popconfirm>
+              <Button disabled={busy === item.id} onClick={() => void decide(item.id, false)}>拒绝</Button>
+            </Space>
+          </Space>
+        </List.Item>} />
+      </Drawer>
       {servers.length === 0 ? (
         <Empty description="暂无 MCP 服务" />
       ) : (

@@ -67,6 +67,10 @@ def extract_constraints(text: str) -> dict[str, str]:
     return result
 
 
+def known_constraint_fields() -> set[str]:
+    return set(_CHANGING_FIELDS)
+
+
 async def latest_constraints(messages) -> dict:
     current: dict = {}
     async with aclosing(messages) as history:

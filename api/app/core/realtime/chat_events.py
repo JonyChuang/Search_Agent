@@ -1,4 +1,4 @@
-"""Replayable Redis events for one authenticated career chat turn."""
+"""Replayable Redis events for an authenticated private chat turn."""
 
 import json
 from time import monotonic
@@ -44,8 +44,16 @@ class ChatEventStream:
             self.cursor, _ = await tx.execute()
 
     async def finished(self) -> bool:
+        return await self.terminal_cursor() is not None
+
+    async def terminal_cursor(self) -> str | None:
         entries = await get_redis().xrevrange(self.key, count=1)
-        return bool(entries and json.loads(entries[0][1]["payload"])["event"] in TERMINAL_EVENTS)
+        if entries and json.loads(entries[0][1]["payload"])["event"] in TERMINAL_EVENTS:
+            return entries[0][0]
+        return None
+
+    async def contains(self, cursor: str) -> bool:
+        return bool(await get_redis().xrange(self.key, min=cursor, max=cursor, count=1))
 
     async def events(self, cursor: str = "0-0"):
         deadline = monotonic() + _WAIT_SECONDS
@@ -63,6 +71,7 @@ class ChatEventStream:
                         return
                     expected += 1
                     item = json.loads(fields["payload"])
+                    item["stream_event_id"] = f"{self.turn}:{cursor}"
                     yield item
                     if item["event"] in TERMINAL_EVENTS:
                         return

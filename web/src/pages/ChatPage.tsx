@@ -49,6 +49,7 @@ function validTraceId(id?: string | null): string | undefined {
 import { AuthenticatedImage } from '@/components/AuthenticatedImage'
 import VoiceInputButton from '@/components/VoiceInputButton'
 import MessageItem from './chat/MessageItem'
+import CareerContextButton from './chat/CareerContextButton'
 import SelectionPopover from './chat/SelectionPopover'
 import ShareModal from './chat/ShareModal'
 import type { ChatAvatars, UiMessage } from './chat/types'
@@ -948,7 +949,9 @@ export default function ChatPage() {
         onDrop={onDrop}
       >
         <div style={{ padding: '12px 16px 0' }}>
-          <CurrentJobSelect />
+          <Space wrap><CurrentJobSelect />
+            {activeId && job && <CareerContextButton key={`${activeId}:${job.id}`} conversation={activeId} job={job.id} />}
+          </Space>
         </div>
         {dragOver && (
           <div className="chat-drop-overlay">

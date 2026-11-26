@@ -10,6 +10,7 @@ from cryptography.fernet import InvalidToken
 from redis.exceptions import RedisError
 
 from app.config import settings
+from app.core.cache_stats import record_cache
 from app.core.exceptions import BizError
 from app.core.llm.client import LLMClient
 from app.core.security import decrypt_secret, encrypt_secret
@@ -25,6 +26,7 @@ async def recall_embedding(client: LLMClient, user_id: UUID, query: str) -> list
                           ensure_ascii=False)
     key = f"memory:recall-vector:v1:{user_id}:{sha256(identity.encode()).hexdigest()}"
     redis = get_redis()
+    outcome = "miss"
     try:
         async with asyncio.timeout(0.15):
             cached = await redis.get(key)
@@ -33,9 +35,12 @@ async def recall_embedding(client: LLMClient, user_id: UUID, query: str) -> list
             if isinstance(vector, list) and len(vector) == settings.embedding_dims and all(
                 isinstance(value, (int, float)) and isfinite(value) for value in vector
             ):
+                record_cache("memory_vector", "hit")
                 return vector
     except (RedisError, TimeoutError, InvalidToken, ValueError, TypeError, OverflowError, BizError):
-        pass
+        outcome = "fallback"
+
+    record_cache("memory_vector", outcome)
 
     vector = await client.embed_one(query)
     try:

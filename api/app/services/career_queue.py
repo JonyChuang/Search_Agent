@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.exceptions import BizError
 
 PUBLIC_KINDS = {"TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"}
+MAX_AUTOMATIC_RETRIES = 2
 FENCE = """
     id = :id AND generation = :generation AND lease_token = :lease
     AND status = 'RUNNING' AND lease_until > CURRENT_TIMESTAMP(6)
@@ -195,9 +196,10 @@ class CareerQueue:
         filters = ", ".join(f":kind{i}" for i in range(len(kinds)))
         params = {f"kind{i}": kind for i, kind in enumerate(kinds)}
         task_id = (await self._run(f"""
-            SELECT t.id FROM career_task t
+            SELECT t.id, t.status, t.generation, t.training_draft_json IS NOT NULL AS has_draft FROM career_task t
             WHERE t.kind IN ({filters})
-              AND (t.status = 'QUEUED' OR (t.status = 'RUNNING' AND t.lease_until <= CURRENT_TIMESTAMP(6)))
+              AND ((t.status = 'QUEUED' AND t.queued_at <= CURRENT_TIMESTAMP(6))
+                   OR (t.status = 'RUNNING' AND t.lease_until <= CURRENT_TIMESTAMP(6)))
               AND (SELECT COUNT(*) FROM career_task r WHERE r.status = 'RUNNING'
                    AND r.lease_until > CURRENT_TIMESTAMP(6)) < 4
               AND (SELECT COUNT(*) FROM career_task r WHERE r.status = 'RUNNING'
@@ -207,15 +209,47 @@ class CareerQueue:
                      AND ((r.status = 'RUNNING' AND r.lease_until > CURRENT_TIMESTAMP(6))
                        OR (r.status IN ('RUNNING', 'QUEUED') AND (r.queued_at, r.id) < (t.queued_at, t.id))))
             ORDER BY t.queued_at, t.id LIMIT 1 FOR UPDATE SKIP LOCKED
-        """, **params)).scalar_one_or_none()
+        """, **params)).one_or_none()
         if task_id is None:
             return None
+        if task_id.status == "RUNNING":
+            if not task_id.has_draft and await self._automatic_retries(task_id.id) >= MAX_AUTOMATIC_RETRIES:
+                await self._run("""UPDATE career_task SET status = 'FAILED', lease_token = NULL, lease_until = NULL,
+                    error_message = :error WHERE id = :id""", id=task_id.id, error="任务多次失去执行租约，请手动重试。")
+                return None
+            await self._run("""INSERT INTO career_task_event (task_id, generation, sequence_no, step, outcome, elapsed_ms)
+                VALUES (:id, :generation, -1, 'lease_reclaimed', 'failed', 0)""",
+                id=task_id.id, generation=task_id.generation)
         await self._run("""
             UPDATE career_task SET status = 'RUNNING', generation = generation + 1,
                 lease_token = :lease, lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND)
             WHERE id = :id
-        """, id=task_id, lease=str(uuid4()))
-        return await self._one("id = :id", id=task_id)
+        """, id=task_id.id, lease=str(uuid4()))
+        return await self._one("id = :id", id=task_id.id)
+
+    async def _automatic_retries(self, task_id: str) -> int:
+        return (await self._run("""SELECT COUNT(*) FROM career_task_event
+            WHERE task_id = :id AND step IN ('auto_retry', 'lease_reclaimed')""", id=task_id)).scalar_one()
+
+    async def renew(self, row: dict) -> bool:
+        changed = await self._run(f"""UPDATE career_task SET
+            lease_until = DATE_ADD(CURRENT_TIMESTAMP(6), INTERVAL 120 SECOND) WHERE {FENCE}""", **self.lease(row))
+        return changed.rowcount == 1
+
+    async def release(self, row: dict) -> None:
+        await self._run(f"""UPDATE career_task SET status = 'QUEUED', lease_token = NULL, lease_until = NULL
+            WHERE {FENCE}""", **self.lease(row))
+
+    async def retry_transient(self, row: dict) -> bool:
+        attempts = await self._automatic_retries(row["id"])
+        if attempts >= MAX_AUTOMATIC_RETRIES:
+            return False
+        await self.record_event(row, {"sequenceNo": -2, "step": "auto_retry", "outcome": "failed",
+                                      "elapsedMs": 0, "inputTokens": None, "outputTokens": None})
+        updated = await self._run(f"""UPDATE career_task SET status = 'QUEUED', lease_token = NULL, lease_until = NULL,
+            queued_at = TIMESTAMPADD(SECOND, :delay, CURRENT_TIMESTAMP(6)) WHERE {FENCE}""",
+            delay=4 * 2**attempts, **self.lease(row))
+        return updated.rowcount == 1
 
     @staticmethod
     def lease(row: dict) -> dict:

@@ -6,6 +6,25 @@ interface Wrapped<T> {
   data: T
 }
 
+export interface CareerContextState {
+  version: number
+  state: Record<string, [string | null, string]>
+  source: string
+}
+
+export const careerContextApi = {
+  read(conversation: string, job: string, version?: number) {
+    return client.get<unknown, Wrapped<CareerContextState>>(`/conversations/${conversation}/career-context/${job}`, {
+      params: { version },
+    })
+  },
+  save(conversation: string, job: string, body: {
+    expected_version: number; fields?: Record<string, string | null>; rollback_to?: number
+  }) {
+    return client.put<unknown, Wrapped<CareerContextState>>(`/conversations/${conversation}/career-context/${job}`, body)
+  },
+}
+
 export interface Conversation {
   id: string
   title: string
@@ -519,13 +538,15 @@ export async function subscribeChatEvents(
   convId: string,
   handlers: StreamHandlers,
   signal?: AbortSignal,
+  lastEventId?: string,
 ): Promise<void> {
   const token = localStorage.getItem('access_token')
   let resp: Response
   try {
     resp = await fetch(`/api/chat/${convId}/events`, {
       method: 'GET',
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}) },
       signal,
     })
   } catch {

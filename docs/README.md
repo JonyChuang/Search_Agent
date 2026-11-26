@@ -2,13 +2,15 @@
 
 - [本地启动与容器部署](../README.md#本地启动)
 - [功能入口、判题执行器、Greenhouse 网申与 Skill 包格式](career-agent-release.md)
-- [Java 业务后端与 Python Agent 架构](java-agent-architecture-2026-11-05.md)
+- [Python 架构、升级与验收](python-runtime-operations.md)
 - [岗位、经历及权限隔离](career-agent-profile-jobs.md)
 - [面经、题库、练习与复习](career-agent-day-3-practice.md)
 - [岗位训练与申请材料](career-agent-day-4-5-workflow.md)
 - [个人资料、上下文预算和执行记录](career-agent-preparation.md)
 - [训练检查点与模型基线](career-agent-training-checkpoints.md)
-- [Java 调度、岗位上下文与 RAG 评测](career-agent-evaluation.md)
+- [岗位上下文、RAG 与历史调度评测](career-agent-evaluation.md)
+
+[Java 业务与 Python Agent 的早期架构记录](java-agent-architecture-2026-11-05.md)
 
 ## 技术资料
 

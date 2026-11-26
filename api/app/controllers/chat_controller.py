@@ -3,12 +3,15 @@ import uuid
 
 from fastapi import APIRouter, Depends, File, Header, UploadFile
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user
+from app.core.exceptions import BizError
 from app.core.response import success
 from app.core.storage import build_file_key, get_storage
 from app.db.postgres import get_session
+from app.db.career import career_transaction
 from app.models.user_model import User
 from app.schemas.chat_schema import (
     ChatStreamRequest,
@@ -17,9 +20,43 @@ from app.schemas.chat_schema import (
     FeedbackRequest,
 )
 from app.services.chat_service import ChatService
+from app.services.career_chat_context import known_constraint_fields
+from app.services.career_context_versions import CareerContextVersions
+from app.services.career_records import CareerRecords
 from app.services.conversation_service import ConversationService
 
 router = APIRouter(tags=["chat"])
+
+
+class CareerContextUpdate(BaseModel):
+    expected_version: int = Field(ge=0)
+    fields: dict[str, str | None] | None = Field(default=None, max_length=3)
+    rollback_to: int | None = Field(default=None, ge=1)
+
+
+async def _career_context(session, user, conv_id, job_id):
+    async with career_transaction() as connection:
+        await CareerRecords(connection, str(user.id)).jobs().get(str(job_id))
+    return CareerContextVersions(session, user.id, conv_id, job_id)
+
+
+@router.get("/conversations/{conv_id}/career-context/{job_id}")
+async def get_career_context(conv_id: uuid.UUID, job_id: uuid.UUID, version: int | None = None,
+                             user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    service = await _career_context(session, user, conv_id, job_id)
+    return success(await service.read(version))
+
+
+@router.put("/conversations/{conv_id}/career-context/{job_id}")
+async def update_career_context(conv_id: uuid.UUID, job_id: uuid.UUID, body: CareerContextUpdate,
+                                user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session)):
+    if (body.fields is None) == (body.rollback_to is None) or any(
+        key not in known_constraint_fields() or (value is not None and not 1 <= len(value.strip()) <= 500)
+        for key, value in (body.fields or {}).items()
+    ):
+        raise BizError("请提供有效的上下文修改或回滚版本", code=400, status_code=400)
+    service = await _career_context(session, user, conv_id, job_id)
+    return success(await service.save(expected=body.expected_version, edits=body.fields, rollback=body.rollback_to))
 
 
 # ── 会话管理 ──
@@ -103,12 +140,13 @@ async def chat_resume_events(
     conv_id: uuid.UUID,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    last_event_id: str | None = Header(default=None, max_length=90),
 ):
     """断线重连续传：若该会话正有生成在进行，补推已生成内容并续接后续 token；
     没有进行中的生成则立即返回 idle（前端据此去重拉历史）。"""
     service = ChatService(session)
     return StreamingResponse(
-        service.resume_events(user.id, conv_id),
+        service.resume_events(user.id, conv_id, last_event_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

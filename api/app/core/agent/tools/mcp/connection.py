@@ -2,9 +2,14 @@
 
 负责：解密认证信息 → 拼 headers；SSRF 校验（禁内网地址）；按传输类型组装。
 """
+import asyncio
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from functools import partial
+
+import httpcore
+import httpx
+from httpcore import AnyIOBackend
 
 from app.core.security import decrypt_secret
 from app.models.mcp_server_model import (
@@ -20,32 +25,54 @@ SSE_READ_TIMEOUT = 60.0
 
 
 def is_safe_url(url: str) -> bool:
-    """SSRF 防护：仅允许 http/https 且非内网/本地地址。"""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
+    """Validate input before connecting. Address validation is repeated at socket creation."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+        parsed = httpx.URL(url)
+        return parsed.scheme in {"http", "https"} and bool(parsed.raw_host) and not parsed.userinfo and not parsed.fragment
+    except (httpx.InvalidURL, ValueError):
         return False
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        ):
-            return False
-    return True
+
+
+def _public_address(value: str) -> bool:
+    address = ipaddress.ip_address(value)
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.is_global and not (address.is_multicast or address.is_reserved)
+
+
+class PublicNetworkBackend(AnyIOBackend):
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        async with asyncio.timeout(timeout):
+            infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+            addresses = list(dict.fromkeys(info[4][0] for info in infos))
+            if not addresses or not all(_public_address(ip) for ip in addresses):
+                raise httpcore.ConnectError("MCP endpoint has a non-public address")
+            for ip in addresses:
+                try:
+                    # Pass the validated IP to the socket. The pool retains the original origin for Host and TLS.
+                    return await super().connect_tcp(ip, port, timeout, local_address, socket_options)
+                except httpcore.ConnectError:
+                    continue
+            raise httpcore.ConnectError("Unable to connect to the MCP endpoint")
+
+
+def _origin(url: httpx.URL):
+    return url.scheme, url.raw_host, url.port or (443 if url.scheme == "https" else 80)
+
+
+def _client_for_origin(origin, headers=None, timeout=None, auth=None) -> httpx.AsyncClient:
+    transport = httpx.AsyncHTTPTransport(trust_env=False)
+    # HTTPX 0.28 does not expose a network backend in its transport constructor.
+    transport._pool = httpcore.AsyncConnectionPool(network_backend=PublicNetworkBackend())
+
+    async def check_origin(request: httpx.Request) -> None:
+        if request.url.userinfo or _origin(request.url) != origin:
+            raise httpx.RequestError("MCP requests must remain on the configured origin", request=request)
+
+    return httpx.AsyncClient(
+        headers=headers, timeout=timeout or httpx.Timeout(30.0), auth=auth, transport=transport,
+        follow_redirects=False, trust_env=False, event_hooks={"request": [check_origin]},
+    )
 
 
 def _build_headers(server: MCPServer) -> dict[str, str]:
@@ -69,10 +96,13 @@ def build_connection(server: MCPServer) -> dict:
         raise ValueError("不允许访问该地址（内网/非法 URL）")
 
     headers = _build_headers(server)
+    if headers and httpx.URL(server.url).scheme != "https":
+        raise ValueError("Authenticated MCP servers require HTTPS")
     transport = "sse" if server.transport == TRANSPORT_SSE else "streamable_http"
     conn: dict = {
         "transport": transport,
         "url": server.url,
+        "httpx_client_factory": partial(_client_for_origin, _origin(httpx.URL(server.url))),
     }
     if headers:
         conn["headers"] = headers

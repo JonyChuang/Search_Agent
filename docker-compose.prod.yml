@@ -64,7 +64,7 @@ services:
     # 只绑定本机回环：不直接对公网，由 web 容器的 nginx 反代 /api；本机可访问便于排查
     ports: !override
       - "127.0.0.1:8000:8000"
-    environment:
+    environment: &career-app-environment
       APP_ENV: production
       APP_DEBUG: "false"
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
@@ -74,7 +74,9 @@ services:
       CAREER_MYSQL_DATABASE: search_agent
       CAREER_MYSQL_USER: career
       CAREER_MYSQL_PASSWORD: ${CAREER_MYSQL_PASSWORD:?Set CAREER_MYSQL_PASSWORD}
-      CAREER_NATIVE_WORKER_ENABLED: "true"
+      CAREER_NATIVE_WORKER_ENABLED: "false"
+      MCP_SHARED_TOOL_CACHE_ENABLED: ${MCP_SHARED_TOOL_CACHE_ENABLED:-true}
+      MEMORY_SHARED_RECALL_CACHE_ENABLED: ${MEMORY_SHARED_RECALL_CACHE_ENABLED:-true}
       CAREER_CONTENT_CURATORS: ${CAREER_CONTENT_CURATORS:-}
       CAREER_PUBLIC_NOTE_FEEDS: ${CAREER_PUBLIC_NOTE_FEEDS:-}
       CAREER_JUDGE0_URL: ${CAREER_JUDGE0_URL:-}
@@ -99,6 +101,26 @@ services:
       resources:
         limits:
           memory: 512m
+
+  career-worker:
+    build: ./api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *career-app-environment
+      POSTGRES_HOST: postgres
+      ES_HOST: http://elasticsearch:9200
+      NEO4J_URI: bolt://neo4j:7687
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./api/storage:/app/storage
+    command: python -m app.services.career_worker
+    stop_grace_period: 30s
 
   worker:
     restart: unless-stopped

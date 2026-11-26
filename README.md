@@ -73,6 +73,7 @@ Search Agent 是面向研究生实习与校招的求职工作台。它以目标�
 flowchart TD
     UI["React / TypeScript"] --> API["FastAPI / Python 3.12"]
     API -->|求职业务与任务租约| Career["MySQL 8.4"]
+    Career <-->|任务认领与检查点| CareerWorker["Python Career Worker"]
     API -->|账号、对话与模型配置| Data["PostgreSQL / Alembic"]
     API -->|知识库召回与记忆读取| Retrieval["Elasticsearch / Neo4j"]
     API -->|流式续传与后台队列| Redis["Redis"]
@@ -191,6 +192,10 @@ npm run dev
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --wait
 ```
 
+生产编排由独立的 `career-worker` 消费求职任务。MCP 工具描述缓存与记忆向量缓存默认启用。升级后，在工具配置中同步并逐项授权外部 MCP 工具。
+
+[Python 架构、升级与验收](docs/python-runtime-operations.md)
+
 ## 评测与验证
 
 | 评测 | 实测结果 |
@@ -202,13 +207,13 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --
 
 [数据集、指标口径与复跑命令](docs/career-agent-evaluation.md) · [训练恢复实测](docs/career-agent-training-checkpoints.md)
 
-开发验证包括 `api/` 下的 `uv run --locked ruff check .`、`backend/` 下使用独立 MySQL 测试库运行的 `.\mvnw.cmd verify`，以及 `web/` 下的 `npx tsc --noEmit` 与 `npm run build`。
+在 `api/` 运行 `uv run --locked ruff check app`、`uv run --locked python -m unittest discover -s tests`、`uv run --locked python -m eval.career_workflow_eval` 和 `uv run --locked python -m eval.career_worker_load`。在 `web/` 运行 `npm run build`。
 
 ## 目录结构
 
 | 路径 | 内容 |
 | --- | --- |
-| [backend/](backend/) | Spring Boot 业务服务、Flyway 迁移和集成测试 |
+| [backend/](backend/) | Flyway 历史 SQL、旧版 Java 参考与兼容性测试 |
 | [api/](api/) | FastAPI、Agent、知识库、Celery 和 Alembic 迁移 |
 | [api/eval/](api/eval/) | 标注测试集与评测脚本 |
 | [web/](web/) | React 求职工作台 |

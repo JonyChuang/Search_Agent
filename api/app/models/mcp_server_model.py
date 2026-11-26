@@ -55,6 +55,7 @@ class MCPServer(Base):
     last_error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # 同步下来的工具清单：[{"name","description"}]
     tools_cache: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    tool_permissions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -175,18 +175,27 @@ async def metrics(db: Records, jobId: UUID | None = None):
     if jobId is not None:
         await db.jobs().get(str(jobId))
     rows = await db.db.execute(text("""
-        SELECT t.kind, t.status, COUNT(DISTINCT t.id) AS taskCount, COUNT(e.task_id) AS recordedSteps,
-            COALESCE(SUM(e.elapsed_ms), 0) AS stepMilliseconds, COUNT(e.input_tokens) AS measuredInputs,
-            COALESCE(SUM(e.input_tokens), 0) AS inputTokens, COALESCE(SUM(e.output_tokens), 0) AS outputTokens,
-            COUNT(CASE WHEN e.outcome = 'failed' THEN 1 END) AS failedSteps,
-            COUNT(DISTINCT CASE WHEN e.step IN ('resume_context', 'resume_catalog', 'resume_draft')
+        WITH steps AS (
+            SELECT t.id, t.kind, t.status, t.result_json, e.task_id, e.step, e.outcome, e.elapsed_ms,
+                e.input_tokens, e.output_tokens,
+                ROW_NUMBER() OVER (PARTITION BY t.kind, t.status ORDER BY e.elapsed_ms DESC) AS reverse_rank,
+                COUNT(e.task_id) OVER (PARTITION BY t.kind, t.status) AS measured
+            FROM career_task t LEFT JOIN career_task_event e ON e.task_id = t.id
+            WHERE t.user_id = :user AND (:job IS NULL OR t.job_id = :job)
+                AND t.created_at >= CURRENT_TIMESTAMP - INTERVAL 30 DAY
+        )
+        SELECT t.kind, t.status, COUNT(DISTINCT t.id) AS taskCount, COUNT(t.task_id) AS recordedSteps,
+            COALESCE(SUM(t.elapsed_ms), 0) AS stepMilliseconds, COUNT(t.input_tokens) AS measuredInputs,
+            COALESCE(SUM(t.input_tokens), 0) AS inputTokens, COALESCE(SUM(t.output_tokens), 0) AS outputTokens,
+            MAX(CASE WHEN t.measured > 0 AND t.reverse_rank = t.measured - CEIL(0.95 * t.measured) + 1
+                     THEN t.elapsed_ms END) AS p95StepMilliseconds,
+            COUNT(CASE WHEN t.outcome = 'failed' THEN 1 END) AS failedSteps,
+            COUNT(DISTINCT CASE WHEN t.step IN ('resume_context', 'resume_catalog', 'resume_draft', 'lease_reclaimed')
                 THEN t.id END) AS resumedTasks,
             COUNT(DISTINCT CASE WHEN JSON_SEARCH(t.result_json, 'one', 'SELECTED', NULL,
                     '$.learning.priorities[*].status') IS NOT NULL
                 THEN t.id END) AS adaptedPlans
-        FROM career_task t LEFT JOIN career_task_event e ON e.task_id = t.id
-        WHERE t.user_id = :user AND (:job IS NULL OR t.job_id = :job)
-            AND t.created_at >= CURRENT_TIMESTAMP - INTERVAL 30 DAY
+        FROM steps t
         GROUP BY t.kind, t.status ORDER BY t.kind, t.status
     """), {"user": db.user, "job": str(jobId) if jobId else None})
     return success([dict(row) for row in rows.mappings()])

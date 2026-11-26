@@ -57,13 +57,14 @@ from app.services.career_chat_context import (
     extract_constraints,
     fit_agent_round,
     fit_turn,
-    latest_constraints,
     render_constraints,
     summarize,
     tool_schema_tokens,
     turn_content,
 )
 from app.services.career_chat_lease import TURN_LIMIT_SECONDS, CareerChatLease
+from app.services.career_context_versions import CareerContextVersions
+from app.services.tool_results import ToolResultArchive
 
 logger = get_logger(__name__)
 
@@ -137,8 +138,9 @@ def _compose_with_attachments(user_text: str, attachments: list) -> str:
     return "\n\n".join(parts) + f"\n\n基于以上文档内容，回答我的问题：\n{user_text}"
 
 
-def _sse(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+def _sse(event: str, data: dict, event_id: str | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id else ""
+    return f"{prefix}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 class ChatService:
@@ -196,7 +198,8 @@ class ChatService:
         self, user_id: uuid.UUID, conv_id: uuid.UUID, job_id: uuid.UUID, question: str = "",
     ) -> tuple[list, str, str]:
         rows = await self.msg_repo.job_history(conv_id, user_id, job_id)
-        current = await latest_constraints(self.msg_repo.job_user_history(conv_id, user_id, job_id))
+        saved = await CareerContextVersions(self.session, user_id, conv_id, job_id).read()
+        current = {key: tuple(value) for key, value in saved["state"].items()}
         while rows and rows[-1].role == ROLE_USER:
             rows.pop()
         recent = rows[-RECENT_MESSAGES:]
@@ -465,17 +468,22 @@ class ChatService:
                                 content=greeting,
                             )
                         )
-                    await svc.msg_repo.add(
+                    constraints = extract_constraints(user_text) if body.career_job_id else {}
+                    user_message = await svc.msg_repo.add(
                         Message(
                             conversation_id=conv.id,
                             role=ROLE_USER,
                             content=user_text,
                             meta_data={**(self._user_meta(attachments, body.image_keys) or {}),
                                        **({"career_job_id": str(body.career_job_id),
-                                           "career_constraints": extract_constraints(user_text)}
+                                           "career_constraints": constraints}
                                           if body.career_job_id else {})},
                         )
                     )
+                    if body.career_job_id and constraints:
+                        await CareerContextVersions(session, user_id, conv.id, body.career_job_id).save(
+                            message_id=user_message.id, message_text=user_text,
+                        )
         except Exception as e:
             if locked:
                 await release_turn()
@@ -487,14 +495,9 @@ class ChatService:
                 await release_turn()
             raise
 
-        pubsub = None
-        stream = ChatEventStream(cid, lease.owner) if body.career_job_id else None
+        stream = ChatEventStream(cid, lease.owner)
         try:
-            if stream:
-                await stream.start()
-            else:
-                await ChatEventStream.clear_current(cid)
-                pubsub = await bus.open_channel(cid)
+            await stream.start()
             async def generate():
                 async with asyncio.timeout(TURN_LIMIT_SECONDS if lease else None):
                     await self._run_chat_turn_bg(
@@ -505,11 +508,7 @@ class ChatService:
                 try:
                     await generate()
                 except TimeoutError:
-                    error = {"message": "求职对话运行超时，请稍后重试。"}
-                    if stream:
-                        await stream.publish("error", error)
-                    else:
-                        await bus.publish(cid, "error", error)
+                    await stream.publish("error", {"message": "对话运行超时，请稍后重试。"})
                 finally:
                     await release_turn()
 
@@ -518,19 +517,16 @@ class ChatService:
             task.add_done_callback(_BG_TASKS.discard)
             locked = False
             yield _sse("meta", {"conversation_id": cid, "title": title})
-            events = stream.events() if stream else bus.iter_channel(pubsub, cid)
-            async for sse in self._relay(events):
+            async for sse in self._relay(stream.events()):
                 yield sse
         except RedisError:
             yield _sse("error", {"message": "回复事件服务暂时不可用，请刷新会话后重试。"})
         finally:
             if locked:
                 await release_turn()
-            if pubsub is not None:
-                await bus.close_channel(pubsub, cid)
 
     async def resume_events(
-        self, user_id: uuid.UUID, conv_id: uuid.UUID
+        self, user_id: uuid.UUID, conv_id: uuid.UUID, last_event_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """断线重连续传：若该会话正有生成在进行，先补推已生成内容（resume 事件），再续接后续
         token 直到 done/error；没有进行中的生成则发 idle 立即结束。"""
@@ -544,13 +540,25 @@ class ChatService:
         try:
             stream = await ChatEventStream.current(cid)
             if stream:
-                if await stream.finished():
+                cursor = None
+                if last_event_id:
+                    caller_turn, _, position = last_event_id.partition(":")
+                    if caller_turn == stream.turn and re.fullmatch(r"(?:0|[1-9][0-9]{0,7})-0", position):
+                        if position == "0-0" or await stream.contains(position):
+                            cursor = position
+                terminal_cursor = await stream.terminal_cursor()
+                if terminal_cursor and (cursor is None or terminal_cursor == cursor):
                     yield _sse("idle", {})
+                    return
+                if cursor is not None:
+                    async for sse in self._relay(stream.events(cursor)):
+                        yield sse
                     return
                 buf = await bus.get_stream_buffer(cid) or {}
                 if buf.get("stream_id") != stream.turn:
                     buf = {}
-                yield _sse("resume", self._resume_payload(buf))
+                position = buf.get("cursor", "0-0")
+                yield _sse("resume", self._resume_payload(buf), f"{stream.turn}:{position}")
                 async for sse in self._relay(stream.events(buf.get("cursor", "0-0")), int(buf.get("n", 0))):
                     yield sse
                 return
@@ -591,28 +599,30 @@ class ChatService:
         async for evt in events:
             ev = evt.get("event")
             data = evt.get("data") or {}
+            cursor = evt.get("stream_event_id")
             if ev == "_ping":
                 yield ": ping\n\n"
             elif ev == "token":
                 if int(data.get("i", 0)) < skip_token_before:
                     continue
-                yield _sse("token", {"text": data.get("text", "")})
+                yield _sse("token", {"text": data.get("text", "")}, cursor)
             elif ev == "tool_start":
                 yield _sse(
                     "tool_start",
                     {"tool": data.get("tool"), "query": data.get("query", "")},
+                    cursor,
                 )
             elif ev == "tool_result":
-                yield _sse("tool_result", data)
+                yield _sse("tool_result", data, cursor)
             elif ev == "citation":
-                yield _sse("citation", {"citations": data.get("citations", [])})
+                yield _sse("citation", {"citations": data.get("citations", [])}, cursor)
             elif ev == "trace":
-                yield _sse("trace", data)
+                yield _sse("trace", data, cursor)
             elif ev == "done":
-                yield _sse("done", data)
+                yield _sse("done", data, cursor)
                 return
             elif ev == "error":
-                yield _sse("error", data)
+                yield _sse("error", data, cursor)
                 return
 
     async def _run_chat_turn_bg(
@@ -906,6 +916,9 @@ class ChatService:
         )
         if career and not (skill and (installed_package or skill.tool_keys)):
             tools.extend(career.read_tools())
+        archive = ToolResultArchive(user_id, conv.id, body.career_job_id) if tools else None
+        if archive:
+            tools.append(archive.reader())
         system_prompt = await _assemble_prompt(has_tools=bool(tools))
         fit_round = None
         if career:
@@ -946,13 +959,14 @@ class ChatService:
             lc_messages.append(HumanMessage(content=composed_text))
             async for ev in run_function_calling(
                 model, tools, lc_messages, stats_holder=stats_holder, fit_round=fit_round,
+                compact_result=archive.compact if archive else None,
             ):
                 yield ev
         else:
             # 弱模型：ReAct
             async for ev in run_react(
                 model, tools, composed_text, history, system_prompt,
-                stats_holder=stats_holder, fit_round=fit_round,
+                stats_holder=stats_holder, fit_round=fit_round, compact_result=archive.compact if archive else None,
             ):
                 yield ev
 

@@ -10,6 +10,7 @@ from mcp.types import Tool
 from redis.exceptions import RedisError
 
 from app.core.logging import get_logger
+from app.core.cache_stats import record_cache
 from app.db.redis import get_redis
 
 logger = get_logger(__name__)
@@ -21,6 +22,22 @@ end
 return 0
 """
 MAX_BYTES = 256 * 1024
+
+
+def _generation_key(user_id: str) -> str:
+    return f"mcp:descriptor-generation:{user_id}"
+
+
+async def invalidate_descriptors(user_id: str) -> None:
+    generation = uuid4().hex
+    try:
+        async with asyncio.timeout(0.5), get_redis().pipeline(transaction=True) as pipe:
+            key = _generation_key(user_id)
+            pipe.set(key, generation, ex=600)
+            pipe.publish(key, generation)
+            await pipe.execute()
+    except (RedisError, TimeoutError):
+        logger.debug("MCP invalidation notification deferred; database revision still applies")
 
 
 async def _redis(call, *args, **kwargs):
@@ -39,7 +56,13 @@ async def load_descriptors(
     user_id: str, server_id: str, version: str, fetch: Callable[[], Awaitable[list[Tool]]],
 ) -> list[Tool]:
     redis = get_redis()
-    key = f"mcp:tools:v1:{user_id}:{server_id}:{sha256(version.encode()).hexdigest()}"
+    try:
+        generation = await _redis(redis.get, _generation_key(user_id)) or "initial"
+    except (RedisError, TimeoutError):
+        record_cache("mcp", "fallback")
+        return await fetch()
+    revision = sha256(f"{version}:{generation}".encode()).hexdigest()
+    key = f"mcp:tools:v1:{user_id}:{server_id}:{revision}"
     lock = f"{key}:load"
     owner = uuid4().hex
     # Wait for the instance that owns the load, bounded by the caller's overall MCP timeout.
@@ -47,12 +70,15 @@ async def load_descriptors(
         try:
             cached = await _read(redis, key)
             if cached is not None:
+                record_cache("mcp", "hit")
                 logger.debug("MCP descriptor cache hit: server=%s", server_id)
                 return cached
             acquired = await _redis(redis.set, lock, owner, nx=True, ex=10)
         except (TimeoutError, RedisError):
+            record_cache("mcp", "fallback")
             return await fetch()
         except (TypeError, ValueError):
+            record_cache("mcp", "fallback")
             # A malformed entry should never prevent loading the live descriptors.
             return await fetch()
         if acquired:
@@ -62,9 +88,11 @@ async def load_descriptors(
         try:
             cached = await _read(redis, key)
             if cached is not None:
+                record_cache("mcp", "hit")
                 return cached
         except (TimeoutError, RedisError, TypeError, ValueError):
             pass
+        record_cache("mcp", "miss")
         tools = await fetch()
         payload = json.dumps([
             tool.model_dump(mode="json", by_alias=True, include={

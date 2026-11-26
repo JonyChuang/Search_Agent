@@ -7,9 +7,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from app.core.agent.tools.base import ToolBuildContext, ToolSpec, register_tool
-from app.core.logging import get_logger
-
-logger = get_logger(__name__)
+from app.core.agent.tools.mcp.execution import request_schedule_approval
 
 KEY = "create_scheduled_task"
 
@@ -32,7 +30,6 @@ class _ScheduleInput(BaseModel):
 
 
 async def _build(ctx: ToolBuildContext) -> StructuredTool:
-    session = ctx.session
     user_id = ctx.user_id
 
     async def _run(
@@ -43,9 +40,7 @@ async def _build(ctx: ToolBuildContext) -> StructuredTool:
         interval_hours: int | None = None,
         name: str | None = None,
     ) -> str:
-        from app.core.exceptions import BizError
         from app.schemas.agent_task_schema import AgentTaskUpsertRequest
-        from app.services.agent_task_service import AgentTaskService
 
         ttype = (trigger_type or "daily").lower()
         if ttype not in ("daily", "weekly", "interval"):
@@ -59,18 +54,8 @@ async def _build(ctx: ToolBuildContext) -> StructuredTool:
             trigger_interval_hours=interval_hours,
             enabled=True,
         )
-        try:
-            task = await AgentTaskService(session).create(user_id, body)
-        except BizError as e:
-            return f"创建定时任务失败：{e.message}"
-        except Exception as e:
-            logger.warning("对话创建定时任务失败: %s", e)
-            return f"创建定时任务失败：{e}"
-        when = task.next_run_at.strftime("%m-%d %H:%M") if task.next_run_at else "稍后"
-        return (
-            f"已创建定时任务「{task.name}」，将于 {when} 首次自动运行深度研究，"
-            f"结果可在「深度研究」或首页查看。"
-        )
+        approval = await request_schedule_approval(user_id, body.model_dump(mode="json"))
+        return f"已准备定时研究草案。请在工具配置的待确认操作中确认 {approval}，确认前任务不会运行。"
 
     return StructuredTool.from_function(
         coroutine=_run,
@@ -87,7 +72,7 @@ register_tool(
     ToolSpec(
         key=KEY,
         name="创建定时任务",
-        description="对话里说每天X点帮我查…，自动建一个定时研究任务。",
+        description="根据对话准备定时研究草案，用户确认后创建。",
         icon="⏰",
         builder=_build,
         default_enabled=True,

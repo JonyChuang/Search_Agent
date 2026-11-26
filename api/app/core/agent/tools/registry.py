@@ -73,7 +73,7 @@ async def build_enabled_tools(
 ) -> list[BaseTool]:
     """构建用户当前启用的工具列表（内置 + MCP，MCP 为无状态版本，每次调用新建连接）。
 
-    保留给不便用上下文管理器的场景；问答/群聊生成请用 build_enabled_tools_cm（持久会话，省握手）。
+    普通对话和群聊均使用同一套 MCP 授权。
 
     overrides: {tool_key: bool} 本轮临时开关（对话请求传入），优先级最高。
     citations: 引用收集器，传给知识库工具。
@@ -108,11 +108,11 @@ async def build_enabled_tools_cm(
     stats_holder: dict[str, dict] | None = None,
     kb_ids: list[str] | None = None,
 ):
-    """构建启用工具（内置 + MCP）的上下文管理器版本：MCP 走「持久会话」。
+    """构建启用工具（内置 + MCP）的上下文管理器版本：MCP 使用执行前授权。
 
     用法：
         async with build_enabled_tools_cm(...) as tools:
-            ... 在此期间用 tools 跑工具编排（同一批 MCP 会话整轮复用，不重复握手）...
+            ... 在此期间用 tools 跑工具编排（同一批 MCP 会话按需要建立受控连接）...
         # 退出时自动关闭 MCP 会话（正常/异常/取消都清理）
 
     MCP 模块不可用时，仅产出内置工具。

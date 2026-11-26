@@ -12,6 +12,7 @@ from app.db.postgres import Base
 # 导入所有模型，确保它们注册到 Base.metadata（autogenerate 需要）
 from app.models import (  # noqa: F401
     agent_config_model,
+    agent_runtime_model,
     conversation_model,
     conversation_share_model,
     daily_review_model,
@@ -56,7 +57,14 @@ async def run_async_migrations() -> None:
         poolclass=NullPool,
     )
     async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        await connection.exec_driver_sql("SELECT pg_advisory_lock(732766124)")
+        await connection.commit()
+        try:
+            await connection.run_sync(do_run_migrations)
+        finally:
+            await connection.rollback()
+            await connection.exec_driver_sql("SELECT pg_advisory_unlock(732766124)")
+            await connection.commit()
     await connectable.dispose()
 
 

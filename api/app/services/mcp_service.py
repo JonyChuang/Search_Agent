@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.agent.tools.mcp.loader import fetch_tools_meta
+from app.core.agent.tools.mcp.tool_cache import invalidate_descriptors
 from app.core.exceptions import BizError
 from app.core.logging import get_logger
 from app.core.security import decrypt_secret, encrypt_secret, mask_secret
@@ -75,7 +76,7 @@ class MCPService:
         )
         created = await self.repo.create(server)
         logger.info("创建 MCP 服务: user=%s name=%s id=%s", user_id, body.name, created.id)
-        self._invalidate_cache(user_id)
+        await self._invalidate_cache(user_id)
         return created
 
     async def update(
@@ -88,13 +89,21 @@ class MCPService:
                 raise BizError("同名 MCP 服务已存在", code=4053)
             server.name = body.name
         if body.transport is not None:
+            if server.transport != body.transport:
+                server.tool_permissions = None
+                server.tools_cache = None
             server.transport = body.transport
         if body.url is not None:
+            if server.url != body.url:
+                server.tool_permissions = None
+                server.tools_cache = None
             server.url = body.url
         if body.enabled is not None:
             server.enabled = body.enabled
         # 认证：传了 auth_type 才动认证；auth_config 为 None 表示沿用旧值
         if body.auth_type is not None:
+            if server.auth_type != body.auth_type or body.auth_config is not None:
+                server.tool_permissions = None
             server.auth_type = body.auth_type
             if body.auth_config is not None:
                 server.auth_config = self._encrypt_auth(
@@ -103,14 +112,24 @@ class MCPService:
             elif body.auth_type == "none":
                 server.auth_config = None
         saved = await self.repo.save(server)
-        self._invalidate_cache(user_id)
+        await self._invalidate_cache(user_id)
+        return saved
+
+    async def set_permissions(self, user_id: uuid.UUID, server_id: uuid.UUID, tools: dict) -> MCPServer:
+        server = await self._get_or_404(user_id, server_id)
+        available = {tool["name"] for tool in (server.tools_cache or [])}
+        if not tools.keys() <= available:
+            raise BizError("请先同步工具清单，再授权清单中的工具", code=4055)
+        server.tool_permissions = tools
+        saved = await self.repo.save(server)
+        await self._invalidate_cache(user_id)
         return saved
 
     async def delete(self, user_id: uuid.UUID, server_id: uuid.UUID) -> None:
         server = await self._get_or_404(user_id, server_id)
         await self.repo.delete(server)
         logger.info("删除 MCP 服务: user=%s id=%s", user_id, server_id)
-        self._invalidate_cache(user_id)
+        await self._invalidate_cache(user_id)
 
     async def toggle(
         self, user_id: uuid.UUID, server_id: uuid.UUID, enabled: bool
@@ -118,16 +137,17 @@ class MCPService:
         server = await self._get_or_404(user_id, server_id)
         server.enabled = enabled
         saved = await self.repo.save(server)
-        self._invalidate_cache(user_id)
+        await self._invalidate_cache(user_id)
         return saved
 
     @staticmethod
-    def _invalidate_cache(user_id: uuid.UUID) -> None:
+    async def _invalidate_cache(user_id: uuid.UUID) -> None:
         """清该用户 MCP 工具缓存（增删改/开关后调用），下次对话重新拉取最新工具。"""
         try:
             from app.core.agent.tools.mcp.loader import invalidate_mcp_cache
 
             invalidate_mcp_cache(user_id)
+            await invalidate_descriptors(str(user_id))
         except Exception:
             pass
 
@@ -144,10 +164,10 @@ class MCPService:
             return True, f"连接成功，发现 {len(tools)} 个工具", tools
         except Exception as e:
             server.status = STATUS_ERROR
-            server.last_error = str(e)[:1024]
+            server.last_error = "无法连接 MCP 服务，请检查地址和凭证。"
             await self.repo.save(server)
-            logger.warning("MCP 测试连接失败: id=%s err=%s", server_id, e)
-            return False, f"连接失败：{e}", []
+            logger.warning("MCP 测试连接失败: id=%s type=%s", server_id, type(e).__name__)
+            return False, server.last_error, []
 
     async def sync(
         self, user_id: uuid.UUID, server_id: uuid.UUID
@@ -158,14 +178,19 @@ class MCPService:
             tools = await fetch_tools_meta(server)
         except Exception as e:
             server.status = STATUS_ERROR
-            server.last_error = str(e)[:1024]
+            server.last_error = "无法同步 MCP 工具，请检查地址和凭证。"
             await self.repo.save(server)
-            raise BizError(f"同步失败：{e}", code=4054) from e
+            raise BizError(server.last_error, code=4054) from e
+        previous = {item["name"]: item for item in (server.tools_cache or [])}
+        unchanged = {item["name"] for item in tools if previous.get(item["name"]) == item}
         server.tools_cache = tools
+        server.tool_permissions = {key: mode for key, mode in (server.tool_permissions or {}).items() if key in unchanged}
         server.status = STATUS_OK
         server.last_error = None
         server.synced_at = datetime.now(timezone.utc)
-        return await self.repo.save(server)
+        saved = await self.repo.save(server)
+        await self._invalidate_cache(user_id)
+        return saved
 
     @staticmethod
     def _auth_masked(server: MCPServer) -> str:
@@ -196,6 +221,7 @@ class MCPService:
             "status": server.status,
             "last_error": server.last_error,
             "tools_cache": server.tools_cache or [],
+            "tool_permissions": server.tool_permissions or {},
             "synced_at": server.synced_at.isoformat() if server.synced_at else None,
             "created_at": server.created_at.isoformat(),
         }

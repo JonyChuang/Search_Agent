@@ -30,6 +30,8 @@ async def lifespan(_: FastAPI):
         await upgrade_to_head()
     except Exception as e:
         logger.error("数据库自动迁移失败，请检查迁移脚本或手动执行 alembic upgrade head: %s", e)
+        if settings.app_env == "production":
+            raise
     # 启动：初始化 ES 索引
     from app.core.rag.es_index import ensure_index
 
@@ -54,21 +56,9 @@ async def lifespan(_: FastAPI):
     logger.info("%s 启动完成", settings.app_name)
     workers = []
     if settings.career_native_worker_enabled:
-        from app.controllers.career_content_controller import curators, feed_schedule, poll_feeds
-        from app.controllers.career_judge_controller import configured_url, poll_judge
-        from app.services.career_reminders import poll_reminders
-        from app.services.career_worker import poll_career_queue, poll_interview_recovery
+        from app.services.career_worker import start_workers
 
-        curators()
-        feeds = feed_schedule()
-        judge = configured_url()
-        workers = [asyncio.create_task(poll_career_queue()) for _ in range(4)]
-        workers.append(asyncio.create_task(poll_interview_recovery()))
-        workers.append(asyncio.create_task(poll_reminders()))
-        if judge:
-            workers.extend(asyncio.create_task(poll_judge()) for _ in range(2))
-        if feeds:
-            workers.append(asyncio.create_task(poll_feeds()))
+        workers = start_workers()
     try:
         yield
     finally:

@@ -2,7 +2,9 @@
 
 强制 user_id 过滤做多租户隔离。命中子块后返回其父块内容提供更大上下文。
 """
+import asyncio
 import uuid
+from time import monotonic
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,7 @@ logger = get_logger(__name__)
 # 融合权重
 _VECTOR_WEIGHT = 0.6
 _BM25_WEIGHT = 0.4
+_MAX_ADAPTIVE_RECALL = 120
 
 
 def _normalize(scores: dict[str, float]) -> dict[str, float]:
@@ -38,6 +41,7 @@ async def hybrid_search(
     source_type: str | None = None,
     min_vector_score: float | None = None,
     kb_ids: list[str] | None = None,
+    *, adaptive: bool = True, rerank: bool = True,
 ) -> list[dict]:
     """混合检索，返回 top_k 个结果（含 content / doc_name / source_id / score）。
 
@@ -78,7 +82,46 @@ async def hybrid_search(
     # 1. 向量召回
     embed_client = await get_client_for_type(session, user_id, "embedding")
     query_vector = await embed_client.embed_one(query)
-    knn_resp = await es.search(
+    started = monotonic()
+    size = max(recall_size, top_k)
+    ceiling = max(size, min(_MAX_ADAPTIVE_RECALL, max(2 * size, 4 * top_k)))
+    hits, candidate_ids, scores, full_window = await _rank_candidates(
+        es, base_filter, query, query_vector, size, min_vector_score,
+    )
+    if adaptive and full_window and size < ceiling and _distinct_candidates(hits, candidate_ids) < top_k:
+        try:
+            hits, candidate_ids, scores, _ = await _rank_candidates(
+                es, base_filter, query, query_vector, ceiling, min_vector_score,
+            )
+            size = ceiling
+        except Exception as error:
+            logger.warning("RAG expanded recall unavailable type=%s", type(error).__name__)
+
+    reranked_ok = False
+    if rerank and min_vector_score is None and candidate_ids:
+        try:
+            rerank_client = await get_optional_client_for_type(session, user_id, "rerank")
+            if rerank_client:
+                docs = [hits[cid]["content"] for cid in candidate_ids]
+                reranked = await rerank_client.rerank(query, docs, top_n=len(candidate_ids))
+                reranked_ids = [candidate_ids[idx] for idx, _ in reranked if 0 <= idx < len(candidate_ids)]
+                candidate_ids = list(dict.fromkeys([*reranked_ids, *candidate_ids]))
+                reranked_ok = bool(reranked_ids)
+        except Exception as error:
+            logger.warning("RAG rerank unavailable type=%s", type(error).__name__)
+    result = await _collect_results(es, uid, hits, candidate_ids, scores, top_k)
+    logger.debug("RAG retrieval window=%d reranked=%s result_count=%d target=%d elapsed_ms=%.1f",
+                 size, reranked_ok, len(result), top_k, (monotonic() - started) * 1000)
+    return result
+
+
+def _distinct_candidates(hits, candidates) -> int:
+    return len({(hits[cid].get("source_id"), hits[cid].get("kb_id"), hits[cid].get("parent_id") or cid)
+                for cid in candidates})
+
+
+async def _rank_candidates(es, base_filter, query, query_vector, recall_size, min_vector_score):
+    knn = es.search(
         index=CHUNKS_INDEX,
         body={
             "size": recall_size,
@@ -94,7 +137,13 @@ async def hybrid_search(
     )
 
     # 2. BM25 召回
-    bm25_resp = await es.search(
+    if min_vector_score is not None:
+        rows = (await knn)["hits"]["hits"]
+        hits = {row["_id"]: row["_source"] for row in rows}
+        scores = {row["_id"]: 2 * row["_score"] - 1 for row in rows if 2 * row["_score"] - 1 >= min_vector_score}
+        return hits, sorted(scores, key=scores.get, reverse=True), scores, len(rows) >= recall_size
+
+    knn_resp, bm25_resp = await asyncio.gather(knn, es.search(
         index=CHUNKS_INDEX,
         body={
             "size": recall_size,
@@ -105,7 +154,7 @@ async def hybrid_search(
                 }
             },
         },
-    )
+    ))
 
     # 3. 收集 + 归一化 + 加权融合
     hits: dict[str, dict] = {}
@@ -126,36 +175,7 @@ async def hybrid_search(
             _VECTOR_WEIGHT * vec_n.get(cid, 0.0) + _BM25_WEIGHT * bm_n.get(cid, 0.0)
         )
 
-    # 3.5 精确模式（全局搜索）：纯语义余弦门控
-    # ES cosine knn 的 _score = (1 + cos) / 2 → cos = 2*score - 1
-    # 只保留余弦 ≥ 阈值的结果，按余弦排序，分数用余弦；BM25 单字噪声不达标即丢弃
-    if min_vector_score is not None:
-        cos_scores = {cid: 2.0 * s - 1.0 for cid, s in vec_scores.items()}
-        kept = {cid: c for cid, c in cos_scores.items() if c >= min_vector_score}
-        if not kept:
-            return []
-        ranked = sorted(kept.items(), key=lambda x: x[1], reverse=True)
-        candidate_ids = [cid for cid, _ in ranked]
-        return await _collect_results(es, uid, hits, candidate_ids, kept, top_k)
-
-    ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)
-    candidate_ids = [cid for cid, _ in ranked[: max(top_k, recall_size)]]
-
-    # 4. 可选 rerank（用户配了 rerank 模型才走）
-    rerank_client = await get_optional_client_for_type(session, user_id, "rerank")
-    if rerank_client and candidate_ids:
-        docs = [hits[cid]["content"] for cid in candidate_ids]
-        try:
-            reranked = await rerank_client.rerank(query, docs, top_n=len(candidate_ids))
-            reranked_ids = [
-                candidate_ids[idx] for idx, _ in reranked if 0 <= idx < len(candidate_ids)
-            ]
-            candidate_ids = list(dict.fromkeys([*reranked_ids, *candidate_ids]))
-        except Exception as e:
-            logger.warning("rerank 失败，回退加权融合排序: %s", e)
-
-    # 5. 取 top_k，返回父块内容（small-to-big）
-    return await _collect_results(es, uid, hits, candidate_ids, fused, top_k)
+    return hits, sorted(fused, key=fused.get, reverse=True)[:recall_size], fused, len(hits) >= recall_size
 
 
 async def _collect_results(
@@ -192,6 +212,7 @@ async def _collect_results(
         results.append(
             {
                 "chunk_id": cid,
+                "parent_id": parent["chunk_id"] if parent else None,
                 "content": (parent or src).get("content", ""),
                 "doc_name": src.get("doc_name"),
                 "source_id": src.get("source_id"),

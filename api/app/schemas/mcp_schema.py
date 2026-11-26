@@ -33,6 +33,14 @@ class MCPServerToggle(BaseModel):
     enabled: bool
 
 
+class MCPToolPermissions(BaseModel):
+    tools: dict[str, Literal["read", "confirm"]] = Field(max_length=200)
+
+
+class MCPApprovalDecision(BaseModel):
+    approve: bool
+
+
 class MCPToolMeta(BaseModel):
     name: str
     description: str = ""
