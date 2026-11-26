@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
+import httpx
 from langchain_core.messages import AIMessage
+from openai import APITimeoutError, RateLimitError
 from sqlalchemy import text
 
 from app.config import settings
@@ -18,6 +20,7 @@ from app.db.career import career_transaction, close, verify_career_schema
 from app.services.career_queue import CareerQueue
 from app.services.career_records import CareerRecords
 from app.services.career_training_contract import TrainingContract, topic_skills
+from app.services.career_training_runtime import TrainingProgress
 from app.services.career_worker import NativeCareerCheckpoints, _run_claimed
 from eval.harness_v2_eval import plan_for
 from eval.harness_v2_replay import archived
@@ -101,7 +104,8 @@ class TrainingMysqlTests(unittest.IsolatedAsyncioTestCase):
                 second = await CareerQueue(db).claim(("TRAINING",))
                 self.assertEqual(second["generation"], first["generation"] + 1)
                 self.assertEqual(second["context_json"]["trainingContract"], first["context_json"]["trainingContract"])
-                self.assertEqual(second["training_runtime_json"]["repairRounds"], 1)
+                self.assertEqual(second["training_runtime_json"]["repairRounds"], 0)
+                self.assertEqual(second["training_runtime_json"]["operation"]["status"], "RESERVED")
             with self.assertRaises(BizError):
                 await NativeCareerCheckpoints(first).training_runtime({"stale": True})
             with self.assertRaises(BizError):
@@ -111,7 +115,8 @@ class TrainingMysqlTests(unittest.IsolatedAsyncioTestCase):
         async with career_transaction() as db:
             queue = CareerQueue(db)
             final = await queue.owned(self.user, first["id"])
-            self.assertEqual(final["training_runtime_json"]["repairRounds"], 2)
+            self.assertEqual(final["training_runtime_json"]["repairRounds"], 1)
+            self.assertEqual(final["training_runtime_json"]["unknownOperations"], 1)
             self.assertEqual(final["training_runtime_json"]["modelCalls"], 1)
             self.assertNotIn("candidate", final["training_runtime_json"])
             self.assertEqual(len(final["result_json"]["steps"]), 2)
@@ -132,3 +137,76 @@ class TrainingMysqlTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await queue.finish(running, {"stale": True}, None))
         with self.assertRaises(BizError):
             await NativeCareerCheckpoints(running).training_runtime({"stale": True})
+
+    async def test_repair_timeouts_and_limit_consume_retry_not_repair_budget(self):
+        row = await self.create_and_claim()
+        contract = TrainingContract.model_validate(row["context_json"]["trainingContract"])
+        chosen = [{**item, "topic": sorted(topic_skills(item["topic"], set(contract.requiredSkills)))[0]}
+                  for item in row["training_catalog_json"][:2]]
+        draft = plan_for(chosen, contract)
+        invalid = {**draft, "questions": [{"id": "unlisted-fixture", "version": 1}, draft["questions"][1]]}
+        request = httpx.Request("POST", "https://example.invalid/model")
+        outcomes = iter([invalid, APITimeoutError(request=request),
+                         RateLimitError("fixture", response=httpx.Response(429, request=request), body=None),
+                         {key: draft[key] for key in ("questions", "schedule")}])
+
+        def bind(*args, tool_choice):
+            async def invoke(messages):
+                answer = next(outcomes)
+                if isinstance(answer, Exception):
+                    raise answer
+                return AIMessage(content="", tool_calls=[{"name": tool_choice, "args": answer, "id": "fixture"}])
+
+            return SimpleNamespace(ainvoke=invoke)
+
+        config = SimpleNamespace(id=uuid4(), updated_at=datetime.now(timezone.utc), capability=["function_call"],
+                                 context_window_tokens=8192)
+        model = SimpleNamespace(model_name="retry-fixture", bind_tools=bind)
+        with patch("app.services.career_task_service.build_default_chat_model", return_value=(model, config)):
+            for attempts in (1, 2):
+                self.assertEqual(await _run_claimed(row), "RETRY_QUEUED")
+                async with career_transaction() as db:
+                    queue = CareerQueue(db)
+                    saved = await queue.owned(self.user, row["id"])
+                    self.assertEqual(saved["training_runtime_json"]["transientRetries"], attempts)
+                    self.assertEqual(saved["training_runtime_json"]["repairRounds"], 0)
+                    await db.execute(text("UPDATE career_task SET queued_at = CURRENT_TIMESTAMP(6) WHERE id = :id"),
+                                     {"id": row["id"]})
+                    row = await queue.claim(("TRAINING",))
+            self.assertEqual(await _run_claimed(row), "SUCCEEDED")
+        async with career_transaction() as db:
+            final = await CareerQueue(db).owned(self.user, row["id"])
+            summary = final["training_runtime_json"]
+            self.assertEqual((summary["modelCalls"], summary["transientRetries"], summary["repairRounds"]), (4, 2, 1))
+
+    async def test_manual_retry_allows_concurrent_recovery_and_blocks_exhaustion(self):
+        row = await self.create_and_claim()
+        current = datetime.now(timezone.utc)
+        state = TrainingProgress(startedAt=current, modelCalls=1).model_dump(mode="json")
+        async with career_transaction() as db:
+            queue = CareerQueue(db)
+            operation = {"id": str(uuid4()), "kind": "GENERATE", "status": "RESERVED"}
+            await queue.training_runtime(row, {**state, "operation": operation})
+            completed = {**state, "operation": {**operation, "status": "VALIDATED"}}
+            await queue.training_runtime(row, completed)
+            await queue.training_runtime(row, completed)
+            with self.assertRaises(BizError):
+                await queue.training_runtime(row, {**completed, "modelCalls": 2})
+            self.assertTrue(await queue.finish(row, None, "fixture", failure_code="TRANSIENT_MODEL_ERROR"))
+
+        async def retry():
+            async with career_transaction() as db:
+                return await CareerQueue(db).retry(self.user, row["id"])
+
+        left, right = await asyncio.gather(retry(), retry())
+        self.assertEqual((left["id"], right["id"], right["status"]), (row["id"], row["id"], "QUEUED"))
+        async with career_transaction() as db:
+            queue = CareerQueue(db)
+            claimed = await queue.claim(("TRAINING",))
+            contract = TrainingContract.model_validate(claimed["context_json"]["trainingContract"])
+            await queue.training_runtime(claimed, {**state, "modelCalls": contract.budget.maxModelCalls})
+            await queue.finish(claimed, None, "fixture", failure_code="MODEL_BUDGET_EXHAUSTED")
+            with self.assertRaisesRegex(BizError, "创建新任务"):
+                await queue.retry(self.user, claimed["id"])
+            duplicate = await queue.by_request(self.user, "TRAINING", claimed["request_json"])
+            self.assertEqual((duplicate["id"], duplicate["status"]), (row["id"], "FAILED"))

@@ -32,6 +32,7 @@ class CareerContextUpdate(BaseModel):
     expected_version: int = Field(ge=0)
     fields: dict[str, str | None] | None = Field(default=None, max_length=len(constraint_types()))
     rollback_to: int | None = Field(default=None, ge=1)
+    time_zone: str | None = Field(default=None, max_length=80)
 
 
 async def _career_context(session, user, conv_id, job_id):
@@ -65,7 +66,8 @@ async def update_career_context(conv_id: uuid.UUID, job_id: uuid.UUID, body: Car
     ):
         raise BizError("请提供有效的上下文修改或回滚版本", code=400, status_code=400)
     service, job = await _career_context(session, user, conv_id, job_id)
-    saved = await service.save(expected=body.expected_version, edits=body.fields, rollback=body.rollback_to)
+    saved = await service.save(expected=body.expected_version, edits=body.fields, rollback=body.rollback_to,
+                               time_zone=body.time_zone)
     return _career_context_response(saved, job)
 
 

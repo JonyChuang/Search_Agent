@@ -22,6 +22,8 @@ export interface TrainingRequirements {
   deadline?: string
   requiredSkills?: string[]
   prioritySkills?: string[]
+  preferredSkills?: string[]
+  orderMode?: 'FIRST_OCCURRENCE_ORDER' | 'STRICT_PHASE_ORDER'
   requiredQuestions?: { id: string; version: number }[]
   excludeCompleted?: boolean
   timeZone?: string
@@ -47,11 +49,13 @@ export interface CareerTask {
     searchedAt?: string
     learning?: {
       policyVersion: string
+      adoption?: { accepted: number; recommended: number }
       priorities: { skill: string; misses: number; sampleSize: number; reason?: string;
         status: 'SELECTED' | 'AVAILABLE' | 'NO_CANDIDATE' }[]
     }
   } | null
   error: string | null
+  retryBlocked?: { code: string; message: string } | null
   generation: number
   trainingStep?: 'FIND_QUESTIONS' | 'GENERATE_PLAN' | 'SAVE_PLAN' | 'COMPLETE' | null
   references?: TaskReference[] | null
@@ -142,7 +146,7 @@ export const careerWorkflow = {
   prepare: (input: JobRequest & PreparationInput & { requestId: string; topic?: string; purpose?: 'NOTES' }) => post<CareerTask>('/career/tasks/preparation', input),
   discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
   training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string; preferredQuestion?: string;
-    previousPlanId?: string; reviewTaskId?: string; requirements?: TrainingRequirements }) =>
+    previousPlanId?: string; reviewTaskId?: string; restartTaskId?: string; requirements?: TrainingRequirements }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
   interview: (input: JobRequest & PreparationInput & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>

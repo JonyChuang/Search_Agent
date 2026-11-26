@@ -4,6 +4,7 @@
 - [功能入口、判题执行器、Greenhouse 网申与 Skill 包格式](career-agent-release.md)
 - [Python 架构、升级与验收](python-runtime-operations.md)
 - [备考 Harness V2 技术报告与评测](career-training-harness-v2.md)
+- [备考 Harness V2 正确性与策略验收](career-training-harness-v2-correctness.md)
 - [正确性、安全性与恢复验收记录](runtime-correctness-review.md)
 - [岗位、经历及权限隔离](career-agent-profile-jobs.md)
 - [面经、题库、练习与复习](career-agent-day-3-practice.md)

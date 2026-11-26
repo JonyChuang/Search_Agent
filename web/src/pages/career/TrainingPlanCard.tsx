@@ -81,6 +81,9 @@ export default function TrainingPlanCard({ task }: { task: CareerTask }) {
             {task.result?.analysis && <p className={styles.longText}>{task.result.analysis}</p>}
             {!!task.result?.learning?.priorities.length && <div>
               <h3 className={styles.smallTitle}>本岗位近期做题反馈</h3>
+              {task.result.learning.adoption && <p className={styles.muted}>
+                本计划采用 {task.result.learning.adoption.accepted} / {task.result.learning.adoption.recommended} 道推荐题
+              </p>}
               <ul>{task.result.learning.priorities.map(({ skill, misses, sampleSize, status, reason }) => (
                 <li key={skill}>{skill} · {reason ?? `${sampleSize} 道题中有 ${misses} 道最近一次答错`} · {
                   { SELECTED: '本计划已安排练习题', AVAILABLE: '有可用候选，本计划未选入', NO_CANDIDATE: '本次目录暂无推荐题' }[status]

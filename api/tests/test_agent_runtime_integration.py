@@ -97,10 +97,13 @@ class RuntimeIntegrationTest(IsolatedAsyncioTestCase):
             message = Message(conversation_id=self.conv, role="user",
                               content="截止时间改为周五，意向城市改为杭州，请重新安排我的训练计划。",
                               meta_data={"career_job_id": str(self.job)})
-            first = await versions.save(message=message)
+            first = await versions.save(message=message, time_zone="Asia/Shanghai")
             self.assertEqual(first["state"], {"截止时间": [str(message.id), "周五"], "意向城市": [str(message.id), "杭州"]})
             changed = await versions.save(expected=1, edits={"意向城市": "南京", "实习时长": "三个月"})
-            self.assertEqual(changed["field_meta"]["截止时间"], {"version": 1, "confirmed": True})
+            self.assertEqual(changed["field_meta"]["截止时间"], first["field_meta"]["截止时间"])
+            self.assertEqual(first["field_meta"]["截止时间"]["rawValue"], "周五")
+            self.assertEqual(first["field_meta"]["截止时间"]["timeZone"], "Asia/Shanghai")
+            self.assertIn("normalizedValue", first["field_meta"]["截止时间"])
             self.assertEqual(changed["field_meta"]["意向城市"], {"version": 2, "confirmed": True})
             canceled = Message(conversation_id=self.conv, role="user", content="取消截止时间，请继续。",
                                meta_data={"career_job_id": str(self.job)})

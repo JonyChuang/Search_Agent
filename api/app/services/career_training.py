@@ -6,14 +6,21 @@ import re
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import bindparam, text
 
+from app.config import settings
 from app.core.exceptions import BizError
 from app.services.career_practice import CareerPractice
 from app.services.career_question_catalog import order_questions, question_key
 from app.services.career_queue import CareerQueue, conflict
 from app.services.career_records import CareerRecords
 from app.services.career_training_contract import TrainingContract, TrainingContractError, feasible_questions
-from app.services.career_training_harness import learn_from_attempts, learning_candidates
-from app.services.career_learning_state import learning_state
+from app.services.career_training_harness import learn_from_attempts, learning_candidates, question_utilities
+from app.services.career_learning_state import (
+    LEARNING_UTILITY,
+    LEARNING_V2,
+    TrainingUtilityWeights,
+    learning_state,
+    with_training_utility,
+)
 
 OPEN_QUESTION = re.compile(r"^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-([0-4])$")
 
@@ -92,9 +99,13 @@ class CareerTraining:
         elif contract is None and role is None and not await self.practice.matching_questions(context["job"]):
             raise conflict("请先在面经与题库生成该岗位的模拟题")
         attempts = await self.practice.training_attempts(job_id)
-        learning = (learning_state(attempts, contract.requiredSkills, contract.createdAt)
-                    if contract and contract.learningVersion == "objective-practice-v2"
+        learning = (learning_state(attempts, sorted(set(contract.requiredSkills + contract.preferredSkills)), contract.createdAt)
+                    if contract and contract.learningVersion in {LEARNING_V2, LEARNING_UTILITY}
                     else learn_from_attempts(attempts, context["job"]))
+        if contract and contract.learningVersion == LEARNING_UTILITY:
+            learning = with_training_utility(learning, job_skills=contract.jobSkills, preferred=contract.preferredSkills,
+                                             as_of=contract.createdAt,
+                                             weights=settings.career_training_utility_weights or TrainingUtilityWeights())
         if learning:
             context["practiceLearning"] = learning
 
@@ -105,7 +116,8 @@ class CareerTraining:
         contract = TrainingContract.model_validate(context["trainingContract"]) if "trainingContract" in context else None
         if contract:
             public = await self.practice.matching_questions(
-                job, role, extra_skills=set(contract.requiredSkills), pinned_ids={ref.id for ref in contract.requiredQuestions},
+                job, role, extra_skills=set(contract.requiredSkills + contract.preferredSkills),
+                pinned_ids={ref.id for ref in contract.requiredQuestions},
             )
         else:
             public = await self.practice.matching_questions(job, role)
@@ -143,11 +155,16 @@ class CareerTraining:
             eligible = [{**question, "practiceCompleted": True} if question_key(question) in completed_keys else question
                         for question in eligible]
         targets = learning_candidates(eligible, learning)
-        catalog = order_questions(eligible, job, context.get("preferredQuestion"), targets)
+        utility = question_utilities(eligible, learning)
+        catalog = order_questions(eligible, job, context.get("preferredQuestion"), targets, utility=utility)
         if contract:
-            catalog = feasible_questions(contract, catalog)
+            catalog = feasible_questions(contract, catalog, utility=utility)[:30]
             if not catalog:
                 raise TrainingContractError("当前岗位方向暂无可用训练题目。")
+            if contract.version == 2:
+                witness = []
+                catalog = feasible_questions(contract, catalog, utility=utility, witness=witness)
+                context["trainingFeasibility"] = {"verifierVersion": contract.verifierVersion, "witness": witness}
         if not catalog:
             raise conflict("当前岗位方向暂无训练题目")
         return jsonable_encoder(catalog[:30])

@@ -49,10 +49,13 @@ def question_key(question: dict) -> tuple[str, int]:
 def order_questions(
     catalog: list[dict], job: dict, preferred: str | None = None,
     practice_targets: dict[tuple[str, int], tuple[str, ...]] | None = None,
+    *, utility: dict[tuple[str, int], tuple[str, float]] | None = None,
 ) -> list[dict]:
     """Keep the requested question, then cover as many required skills as possible."""
     needed = required_skills(job)
     pending = list(catalog)
+    if utility:
+        pending.sort(key=lambda item: -utility.get(question_key(item), ("", 0))[1])
     selected = []
     practice_targets = practice_targets or {}
     if preferred:

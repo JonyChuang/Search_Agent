@@ -40,7 +40,8 @@ export default function CareerContextButton({ conversation, job }: { conversatio
     if (!target && (!edits || !Object.keys(edits).length)) return
     setBusy(true)
     try {
-      const body = values ? { fields: edits } : { rollback_to: target ?? undefined }
+      const body = values ? { fields: edits, time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone }
+        : { rollback_to: target ?? undefined }
       fill((await careerContextApi.save(conversation, job, { expected_version: state.version, ...body })).data)
       message.success('岗位上下文已更新')
     } catch (error) {
@@ -55,10 +56,14 @@ export default function CareerContextButton({ conversation, job }: { conversatio
     <Drawer title="岗位上下文约束" open={open} onClose={() => setOpen(false)} forceRender>
       {state?.job_facts?.location && <p>岗位实际地点 {state.job_facts.location}（来自岗位记录）</p>}
       <Form form={form} layout="vertical" disabled={busy || !state} onFinish={(values) => void save(values)}>
-        {fields.map((name) => <Form.Item key={name} label={name} name={name}
-          extra={state?.constraints?.some((item) => item.field === name && !item.confirmed) ? '来自历史消息，保存可确认。' : undefined}>
-          <Input.TextArea maxLength={500} autoSize={{ minRows: 2 }} />
-        </Form.Item>)}
+        {fields.map((name) => {
+          const constraint = state?.constraints?.find((item) => item.field === name)
+          const hint = constraint?.normalizedValue ? `固定截止日期 ${constraint.normalizedValue}`
+            : constraint?.confirmed === false ? name === '截止时间' ? '请保存以确认截止日期。' : '来自历史消息，保存可确认。' : undefined
+          return <Form.Item key={name} label={name} name={name} extra={hint}>
+            <Input.TextArea maxLength={500} autoSize={{ minRows: 2 }} />
+          </Form.Item>
+        })}
         <Space>
           <Button type="primary" htmlType="submit" loading={busy}>保存约束</Button>
           <Button onClick={() => void load()}>刷新版本</Button>

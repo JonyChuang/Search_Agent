@@ -11,6 +11,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.exceptions import BizError
+from app.services.career_training_contract import TrainingContract
+from app.services.career_training_runtime import retry_block
 
 PUBLIC_KINDS = {"TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"}
 MAX_AUTOMATIC_RETRIES = 2
@@ -60,10 +62,12 @@ def view(row: dict) -> dict:
             step = "GENERATE_PLAN"
         else:
             step = "FIND_QUESTIONS"
+    blocked = retry_block(row) if status in {"FAILED", "WAITING_USER"} else None
     return {
         "id": row["id"], "kind": kind, "status": status, "request": row["request_json"],
         "job": (context.get("job") or {}).get("label", ""), "interview": interview,
         "result": result, "error": row["error_message"], "generation": row["generation"],
+        "retryBlocked": {"code": blocked.code, "message": str(blocked)} if blocked else None,
         "trainingStep": step, "references": (row["agent_context_json"] or {}).get("references"),
         "createdAt": row["created_at"].replace(tzinfo=timezone.utc),
         "updatedAt": row["updated_at"].replace(tzinfo=timezone.utc),
@@ -165,6 +169,8 @@ class CareerQueue:
         await self._lock_scheduler()
         row = await self.owned(user, task_id, public=public)
         if row["status"] == "FAILED":
+            if blocked := retry_block(row):
+                raise conflict(str(blocked)) from blocked
             await self._check_queue(user)
             await self._run("""
                 UPDATE career_task SET status = 'QUEUED', error_message = NULL, queued_at = CURRENT_TIMESTAMP(6)
@@ -186,6 +192,8 @@ class CareerQueue:
             return row
         if row["status"] != status or status not in allowed:
             raise conflict("任务状态已变化，请刷新后重试")
+        if action == "RESUME" and (blocked := retry_block(row)):
+            raise conflict(str(blocked)) from blocked
         changed = await self._run("""
             UPDATE career_task SET status = :target, lease_token = NULL, lease_until = NULL,
                 queued_at = IF(:target = 'QUEUED', CURRENT_TIMESTAMP(6), queued_at)
@@ -203,7 +211,10 @@ class CareerQueue:
         filters = ", ".join(f":kind{i}" for i in range(len(kinds)))
         params = {f"kind{i}": kind for i, kind in enumerate(kinds)}
         task_id = (await self._run(f"""
-            SELECT t.id, t.status, t.generation, t.training_draft_json IS NOT NULL AS has_draft FROM career_task t
+            SELECT t.id, t.status, t.generation, t.training_draft_json IS NOT NULL AS has_draft,
+                t.context_json->'$.trainingContract' IS NOT NULL AS has_contract,
+                COALESCE(t.training_runtime_json->>'$.stage' = 'VERIFIED', FALSE) AS verified
+            FROM career_task t
             WHERE t.kind IN ({filters})
               AND ((t.status = 'QUEUED' AND t.queued_at <= CURRENT_TIMESTAMP(6))
                    OR (t.status = 'RUNNING' AND t.lease_until <= CURRENT_TIMESTAMP(6)))
@@ -220,8 +231,11 @@ class CareerQueue:
         if task_id is None:
             return None
         if task_id.status == "RUNNING":
-            if not task_id.has_draft and await self._automatic_retries(task_id.id) >= MAX_AUTOMATIC_RETRIES:
+            step = "lease_reclaimed" if task_id.has_contract else None
+            if (not task_id.has_draft and not task_id.verified
+                    and await self._automatic_retries(task_id.id, step) >= MAX_AUTOMATIC_RETRIES):
                 await self._run("""UPDATE career_task SET status = 'FAILED', lease_token = NULL, lease_until = NULL,
+                    training_runtime_json = JSON_SET(training_runtime_json, '$.failureCode', 'WORKER_INTERRUPTED'),
                     error_message = :error WHERE id = :id""", id=task_id.id, error="任务多次失去执行租约，请手动重试。")
                 return None
             await self._run("""INSERT INTO career_task_event (task_id, generation, sequence_no, step, outcome, elapsed_ms)
@@ -234,9 +248,10 @@ class CareerQueue:
         """, id=task_id.id, lease=str(uuid4()))
         return await self._one("id = :id", id=task_id.id)
 
-    async def _automatic_retries(self, task_id: str) -> int:
+    async def _automatic_retries(self, task_id: str, step: str | None = None) -> int:
         return (await self._run("""SELECT COUNT(*) FROM career_task_event
-            WHERE task_id = :id AND step IN ('auto_retry', 'lease_reclaimed')""", id=task_id)).scalar_one()
+            WHERE task_id = :id AND step IN ('auto_retry', 'lease_reclaimed') AND (:step IS NULL OR step = :step)""",
+                                id=task_id, step=step)).scalar_one()
 
     async def renew(self, row: dict) -> bool:
         changed = await self._run(f"""UPDATE career_task SET
@@ -248,14 +263,20 @@ class CareerQueue:
             WHERE {FENCE}""", **self.lease(row))
 
     async def retry_transient(self, row: dict) -> bool:
-        attempts = await self._automatic_retries(row["id"])
-        if attempts >= MAX_AUTOMATIC_RETRIES:
+        raw = (row.get("context_json") or {}).get("trainingContract")
+        budget = TrainingContract.model_validate(raw).budget if raw else None
+        attempts = await self._automatic_retries(row["id"], "auto_retry" if budget else None)
+        if attempts >= (budget.maxTransientRetries if budget else MAX_AUTOMATIC_RETRIES) or retry_block(row):
             return False
         await self.record_event(row, {"sequenceNo": -2, "step": "auto_retry", "outcome": "failed",
-                                      "elapsedMs": 0, "inputTokens": None, "outputTokens": None})
+                                      "elapsedMs": 0, "inputTokens": None, "outputTokens": None,
+                                      "details": {"errorCode": "TRANSIENT_MODEL_ERROR", "transientRetries": attempts + 1}
+                                      if budget else None})
         updated = await self._run(f"""UPDATE career_task SET status = 'QUEUED', lease_token = NULL, lease_until = NULL,
+            training_runtime_json = IF(:v2, JSON_SET(training_runtime_json, '$.transientRetries', :attempts),
+                                      training_runtime_json),
             queued_at = TIMESTAMPADD(SECOND, :delay, CURRENT_TIMESTAMP(6)) WHERE {FENCE}""",
-            delay=4 * 2**attempts, **self.lease(row))
+            delay=4 * 2**attempts, v2=budget is not None, attempts=attempts + 1, **self.lease(row))
         return updated.rowcount == 1
 
     @staticmethod
@@ -297,10 +318,15 @@ class CareerQueue:
 
     async def training_runtime(self, row: dict, value: dict) -> None:
         # The generation and lease predicate guards every reservation and candidate update.
+        operation = value.get("operation") or {}
+        complete = operation.get("status") in {"NO_RESULT", "VALIDATED"}
         await self._run(f"""
             UPDATE career_task SET training_runtime_json = :value
             WHERE {FENCE} AND kind = 'TRAINING' AND training_draft_json IS NULL
-        """, value=json.dumps(value, ensure_ascii=False), **self.lease(row))
+              AND (NOT :complete OR (training_runtime_json->>'$.operation.id' = :operation_id
+                   AND training_runtime_json->>'$.operation.status' = 'RESERVED'))
+        """, value=json.dumps(value, ensure_ascii=False), complete=complete, operation_id=operation.get("id"),
+            **self.lease(row))
         if (await self.active(row)).get("training_runtime_json") != value:
             raise conflict("训练执行状态无法更新")
 
@@ -309,13 +335,15 @@ class CareerQueue:
             WHERE details_json IS NOT NULL AND created_at < TIMESTAMPADD(DAY, :retention, CURRENT_TIMESTAMP(6))
             ORDER BY created_at LIMIT 200""", retention=-TRAINING_EVENT_RETENTION_DAYS)
 
-    async def finish(self, row: dict, result: dict | None, error: str | None) -> bool:
+    async def finish(self, row: dict, result: dict | None, error: str | None, *, failure_code: str | None = None) -> bool:
         changed = await self._run(f"""
             UPDATE career_task SET status = :status, result_json = :result, error_message = :error,
-                training_runtime_json = IF(:status = 'SUCCEEDED',
-                    JSON_REMOVE(training_runtime_json, '$.candidate'), training_runtime_json),
+                training_runtime_json = CASE WHEN :status = 'SUCCEEDED'
+                    THEN JSON_REMOVE(training_runtime_json, '$.candidate', '$.failureCode')
+                    WHEN :failure_code IS NOT NULL THEN JSON_SET(training_runtime_json, '$.failureCode', :failure_code)
+                    ELSE training_runtime_json END,
                 lease_token = NULL, lease_until = NULL
             WHERE {FENCE}
-        """, status="FAILED" if error else "SUCCEEDED", error=error,
+        """, status="FAILED" if error else "SUCCEEDED", error=error, failure_code=failure_code,
             result=json.dumps(result, ensure_ascii=False) if result is not None else None, **self.lease(row))
         return changed.rowcount == 1

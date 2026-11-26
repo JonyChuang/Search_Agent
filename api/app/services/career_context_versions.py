@@ -1,6 +1,7 @@
 """Versioned, owner-scoped job constraints backed by PostgreSQL."""
 
 import json
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import text
@@ -9,6 +10,7 @@ from app.core.exceptions import BizError
 from app.models.conversation_model import Message
 from app.repositories.conversation_repository import ConversationRepository, MessageRepository
 from app.services.career_chat_context import extract_constraints, latest_constraints, normalize_constraint_value
+from app.services.career_training_contract import TrainingContractError, fixed_deadline
 
 
 class CareerContextVersions:
@@ -46,7 +48,8 @@ class CareerContextVersions:
         history = MessageRepository(self.session).job_user_history(self.keys["conversation"], self.user_id, self.keys["job"])
         return {"version": 0, "state": await latest_constraints(history), "source": "history"}
 
-    async def save(self, *, message: Message | None = None, edits=None, expected=None, rollback=None) -> dict:
+    async def save(self, *, message: Message | None = None, edits=None, expected=None, rollback=None,
+                   time_zone: str | None = None) -> dict:
         # Serialize chat edits and explicit user edits for the same conversation/job.
         await self.session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
                                    {"scope": f"career-context:{self.keys['conversation']}:{self.keys['job']}"})
@@ -82,8 +85,19 @@ class CareerContextVersions:
                     next_meta.pop(field, None)
                 else:
                     entry = [str(message.id) if message is not None else None, value.strip()]
-                    if tuple(state.get(field, ())) != tuple(entry) or not next_meta.get(field, {}).get("confirmed"):
-                        next_meta[field] = {"version": version + 1, "confirmed": True}
+                    previous = next_meta.get(field, {})
+                    details = {"version": version + 1, "confirmed": True}
+                    if field == "截止时间":
+                        anchor = getattr(message, "created_at", None) or datetime.now(timezone.utc)
+                        try:
+                            details.update(fixed_deadline(entry[1], anchor, time_zone))
+                        except TrainingContractError as error:
+                            if message is None:
+                                raise BizError(str(error), code=409, status_code=409) from error
+                            details.update(rawValue=entry[1], confirmed=False, status="AMBIGUOUS")
+                    if (tuple(state.get(field, ())) != tuple(entry) or not previous.get("confirmed")
+                            or details.get("normalizedValue") != previous.get("normalizedValue")):
+                        next_meta[field] = details
                     state[field] = entry
         comparable = {key: list(value) for key, value in current["state"].items()}
         if version > 0 and state == comparable and next_meta == metadata:

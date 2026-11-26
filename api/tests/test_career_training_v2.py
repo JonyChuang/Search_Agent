@@ -1,9 +1,10 @@
 import asyncio
 import copy
+import json
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage
@@ -12,28 +13,34 @@ from app.controllers.career_task_controller import TrainingRequest, submit
 from app.core.agent.loop.models import RubricDef, RubricDim
 from app.core.agent.loop.verifier.llm_verifier import _render_prompt
 from app.services.career_chat_tools import requests_plan
+from app.services.career_chat_context import constraint_details, parse_constraint_request
 from app.services.career_context import CareerContextTooLarge
-from app.services.career_learning_state import learning_state
+from app.services.career_context_versions import CareerContextVersions
+from app.services.career_learning_state import TrainingUtilityWeights, learning_state, with_training_utility
+from app.services.career_question_catalog import order_questions, question_key
 from app.services.career_task_service import CareerRun, CareerTrace, generate_verified_plan
 from app.services.career_training_contract import (
     TrainingContractError,
     TrainingRequirements,
     build_contract,
     feasible_questions,
+    fixed_deadline,
+    read_requirements,
 )
-from app.services.career_training_runtime import TrainingExecution, TrainingProgress
-from app.services.career_training_verifier import TrainingPlan, verify_plan
+from app.services.career_training_runtime import TrainingExecution, TrainingProgress, retry_block
+from app.services.career_training_harness import explain_learning, learning_candidates, question_utilities
+from app.services.career_training_verifier import TrainingPlan, schema_report, verify_plan
 
 NOW = datetime(2026, 11, 26, 16, 30, tzinfo=timezone.utc)
 JOB = {"skills": "Redis / MySQL"}
 CATALOG = [{"id": "redis", "version": 2, "topic": "Redis"}, {"id": "mysql", "version": 1, "topic": "MySQL"}]
 
 
-def contract(requirements=None, *, text="", pinned=(), repair="local-v1"):
+def contract(requirements=None, *, text="", pinned=(), repair="local-v1", created_at=NOW):
     return build_contract(
         user=str(uuid4()), job_id=str(uuid4()), conversation=str(uuid4()), job=JOB, preferred=None,
         requirements=TrainingRequirements.model_validate(requirements or {}), request_text=text, pinned=pinned,
-        created_at=NOW, repair=repair, learning="objective-practice-v1",
+        created_at=created_at, repair=repair, learning="objective-practice-v1",
     )
 
 
@@ -60,6 +67,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(spec.prioritySkills, ["Redis"])
         self.assertTrue(spec.excludeCompleted)
         pinned[0]["value"] = "下周一"
+        pinned[0].update(fixed_deadline("下周一", NOW, "Asia/Shanghai"))
         new = contract({"timeZone": "Asia/Shanghai"}, pinned=pinned)
         self.assertEqual(new.deadline, date(2026, 11, 30))
         self.assertEqual(spec.deadline, date(2026, 11, 27))
@@ -72,10 +80,47 @@ class ContractTests(unittest.TestCase):
         self.assertIn("左右", spec.preferences[0])
         with self.assertRaisesRegex(TrainingContractError, "时区"):
             contract(text="周五之前完成 Redis 的复习")
-        with self.assertRaisesRegex(TrainingContractError, "明确一个日期"):
+        with self.assertRaisesRegex(TrainingContractError, "固定的截止日期"):
             contract({"timeZone": "Asia/Shanghai"}, text="明天截止，后天截止")
-        with self.assertRaisesRegex(TrainingContractError, "题量不足"):
+        with self.assertRaisesRegex(TrainingContractError, "题量"):
             feasible_questions(contract({"questionCount": 1, "prioritySkills": ["Redis"]}), CATALOG)
+
+    def test_negation_range_condition_and_structured_precedence(self):
+        self.assertEqual(contract(text="安排五道题").questionCount, 5)
+        self.assertEqual(contract(text="先安排三道题，改成五道题").questionCount, 5)
+        for raw in ("不要安排五道题", "如果有时间就安排五道题", "如果有时间，安排五道题", "安排五道题左右"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(contract(text=raw).questionCount)
+                self.assertIn(raw, contract(text=raw).preferences)
+        for raw in ("最多安排五道题", "至少安排三道题", "安排三到五道题", "安排三道题，同时安排五道题",
+                    "不要超过五道题", "不要安排五道题，安排五道题", "截止日期是周五，周六"):
+            with self.subTest(raw=raw), self.assertRaises(TrainingContractError) as error:
+                contract(text=raw)
+            self.assertEqual(error.exception.code, "CONTRACT_CONFIRMATION_REQUIRED")
+        self.assertEqual(read_requirements("不要优先复习 Redis")[0].status, "NEGATED")
+        self.assertEqual(contract(text="不要优先复习 Redis").prioritySkills, [])
+        self.assertIsNone(contract(text="周五不需要完成复习").deadline)
+        self.assertIsNone(contract(text="请复习 Redis").questionCount)
+        mixed = contract({"questionCount": 4}, text="安排三道题，安排五道题")
+        self.assertEqual(mixed.questionCount, 4)
+        self.assertEqual({source.get("status") for source in mixed.sources if source["type"] == "natural"}, {"CONFLICTING"})
+        self.assertTrue(any(source["type"] == "structured" and source["field"] == "questionCount" for source in mixed.sources))
+
+    def test_fixed_date_does_not_drift_and_legacy_relative_requires_confirmation(self):
+        zone = "Asia/Shanghai"
+        pinned = {"field": "截止时间", "value": "明天", "confirmed": True, **fixed_deadline("明天", NOW, zone)}
+        tomorrow = NOW + timedelta(days=1)
+        self.assertEqual(contract({"timeZone": zone}, pinned=[pinned]).deadline, date(2026, 11, 28))
+        self.assertEqual(contract({"timeZone": zone}, pinned=[pinned], created_at=tomorrow).deadline, date(2026, 11, 28))
+        self.assertEqual(fixed_deadline("明天", NOW, "America/Los_Angeles")["normalizedValue"], "2026-11-27")
+        west = {**pinned, **fixed_deadline("明天", NOW, "America/Los_Angeles")}
+        east_midnight = datetime(2026, 11, 28, 3, tzinfo=timezone.utc)
+        traveling = contract({"timeZone": zone}, pinned=[west], created_at=east_midnight)
+        self.assertEqual((traveling.startDate, traveling.deadline), (date(2026, 11, 27), date(2026, 11, 27)))
+        with self.assertRaisesRegex(TrainingContractError, "早于"):
+            contract({"timeZone": zone}, pinned=[pinned], created_at=tomorrow + timedelta(days=1))
+        with self.assertRaisesRegex(TrainingContractError, "重新确认"):
+            contract({"timeZone": zone}, pinned=[{"field": "截止时间", "value": "明天", "confirmed": True}])
 
     def test_feasibility_keep_pinned_and_exact_cover(self):
         spec = contract({"requiredSkills": ["Python", "Spring"], "questionCount": 2, "excludeCompleted": True})
@@ -97,6 +142,46 @@ class ContractTests(unittest.TestCase):
         self.assertEqual({error.code for error in report.errors}, {
             "DEADLINE_EXCEEDED", "INVALID_DATE_ORDER", "PRIORITY_ORDER_MISMATCH", "UNCONFIRMED_EXPERIENCE",
         })
+
+    def test_phase_order_and_preflight_use_same_question_rules(self):
+        redis, mysql = CATALOG
+        catalog = [redis, mysql, {**redis, "id": "redis-2"}]
+        strict = contract(text="先完成 Redis 阶段后再复习 MySQL", requirements={"questionCount": 3})
+        self.assertEqual(strict.orderMode, "STRICT_PHASE_ORDER")
+        plain = strict.model_copy(update={"orderMode": "FIRST_OCCURRENCE_ORDER"})
+        for ids, expected in ((["redis", "redis-2", "mysql"], (True, True)),
+                              (["redis", "mysql", "redis-2"], (True, False)),
+                              (["mysql", "redis", "redis-2"], (False, False))):
+            draft = plan()
+            different = {item["id"]: item for item in catalog}
+            draft["questions"] = [{"id": identifier, "version": different[identifier]["version"]} for identifier in ids]
+            draft["schedule"] = [{"title": "练习", "scheduledDate": None, "skill": None, "questionRefs": [identifier]}
+                                 for identifier in ids]
+            candidate = TrainingPlan.model_validate(draft)
+            self.assertEqual(tuple(verify_plan(candidate, spec, catalog, set()).passed for spec in (plain, strict)), expected)
+            legacy = strict.model_copy(update={"version": 1, "verifierVersion": "training-verifier-v1"})
+            self.assertEqual(verify_plan(candidate, legacy, catalog, set()).passed, expected[0])
+        witness = []
+        feasible_questions(strict, catalog, witness=witness)
+        self.assertEqual([item["id"] for item in witness], ["redis", "redis-2", "mysql"])
+        dual = [{"id": "both", "version": 1, "topic": "Redis MySQL"}]
+        with self.assertRaisesRegex(TrainingContractError, "复习阶段"):
+            feasible_questions(strict.model_copy(update={"questionCount": 1}), dual)
+        self.assertEqual(feasible_questions(plain.model_copy(update={"questionCount": 1}), dual), dual)
+
+    def test_candidate_truncation_and_search_limit(self):
+        spec = contract({"prioritySkills": ["Redis", "MySQL", "Python"], "questionCount": 3})
+        catalog = [{"id": f"d{i}", "version": 1, "topic": "Spring"} for i in range(31)]
+        catalog += [{"id": "skip", "version": 1, "topic": "Redis Python"}, {"id": "p", "version": 1, "topic": "Python"}, *CATALOG]
+        witness = []
+        snapshot = feasible_questions(spec, catalog)[:30]
+        feasible_questions(spec, snapshot, witness=witness)
+        self.assertEqual([q["id"] for q in witness][:2], ["redis", "mysql"])
+        self.assertIn(witness[-1]["id"], {"p", "skip"})
+        with patch("app.services.career_training_contract.MAX_FEASIBILITY_STEPS", 1):
+            with self.assertRaises(TrainingContractError) as blocked:
+                feasible_questions(spec, catalog)
+        self.assertEqual(blocked.exception.code, "TASK_CONTRACT_FEASIBILITY_UNDETERMINED")
 
     def test_offline_semantic_rubric_uses_the_plan_artifact(self):
         rubric = RubricDef(name="career_training", dims=[RubricDim(key="practicality", label="可执行性", weight=1)])
@@ -125,6 +210,34 @@ class ContractTests(unittest.TestCase):
 
 
 class SubmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pinned_deadline_edit_and_rollback_preserve_normalization_metadata(self):
+        records = {0: {"version": 0, "state": {}, "source": "history"}}
+
+        async def execute(query, params):
+            if "INSERT INTO career_context_versions" in str(query):
+                records[params["version"]] = {"version": params["version"], "source": params["source"],
+                                             "state": json.loads(params["state"]), "field_meta": json.loads(params["field_meta"])}
+
+        session = SimpleNamespace(execute=execute, add=Mock(), flush=AsyncMock(), commit=AsyncMock())
+        conversation = uuid4()
+        service = CareerContextVersions(session, uuid4(), conversation, uuid4())
+        service.read = AsyncMock(side_effect=lambda version=None: records[max(records) if version is None else version])
+        first = SimpleNamespace(id=uuid4(), conversation_id=conversation, role="user", created_at=NOW,
+                                content="截止时间改为明天。")
+        saved = await service.save(message=first, time_zone="Asia/Shanghai")
+        original = saved["field_meta"]["截止时间"]
+        self.assertEqual(original["normalizedValue"], "2026-11-28")
+        self.assertEqual(original["rawValue"], "明天")
+        changed = await service.save(edits={"截止时间": "2026-12-03"}, time_zone="America/Los_Angeles", expected=1)
+        self.assertEqual(changed["field_meta"]["截止时间"]["normalizedValue"], "2026-12-03")
+        rollback = await service.save(rollback=1, expected=2, time_zone="America/Los_Angeles")
+        self.assertEqual(rollback["field_meta"]["截止时间"], original)
+        self.assertEqual(rollback["state"]["截止时间"][0], str(first.id))
+        condition = "如果有时间，截止时间改为周五。"
+        self.assertEqual(parse_constraint_request(condition), ({}, condition))
+        legacy = constraint_details({"截止时间": [str(first.id), "明天"]}, 1)
+        self.assertFalse(legacy[0]["confirmed"])
+
     async def test_freezes_separate_scopes_and_does_not_rebuild_on_request_replay(self):
         user, job, conversation, request_id = (str(uuid4()) for _ in range(4))
         body = TrainingRequest(jobId=job, requestId=request_id, requirements={"questionCount": 2})
@@ -197,7 +310,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final["schedule"][1]["title"], bad["schedule"][1]["title"])
         self.assertEqual((self.runtime.state.modelCalls, self.runtime.state.repairRounds), (1, 1))
 
-    async def test_patch_recovery_spends_reserved_round_and_merges_original_analysis(self):
+    async def test_patch_recovery_preserves_model_reservation_and_merges_original_analysis(self):
         bad = plan()
         bad["questions"][0]["id"] = "not-in-catalog"
         snapshot = {}
@@ -216,7 +329,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.generate(iter([good]))
         self.assertEqual(self.tool, "TrainingPlanPatch")
         self.assertEqual(self.runtime.state.modelCalls, 3)
-        self.assertEqual(self.runtime.state.repairRounds, 2)
+        self.assertEqual(self.runtime.state.repairRounds, 1)
+        self.assertEqual(self.runtime.state.unknownOperations, 1)
         self.assertEqual(self.callbacks.plan.await_args.args[0]["analysis"], bad["analysis"])
 
     async def test_repeated_schema_failure_stops_and_cannot_save(self):
@@ -238,3 +352,60 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = TrainingExecution(self.spec, expired, self.callbacks.training_runtime)
         with self.assertRaisesRegex(TrainingContractError, "时限"):
             await self.generate(iter([]))
+
+    async def test_repeat_result_is_idempotent_and_model_cap_blocks_restart(self):
+        operation = await self.runtime.reserve(model=True, repair=True)
+        self.assertTrue(await self.runtime.verified(operation, None, schema_report(None)))
+        self.assertFalse(await self.runtime.verified(operation, None, schema_report(None)))
+        self.assertEqual(self.runtime.state.repairRounds, 1)
+        progress = self.runtime.state.model_dump(mode="json")
+        progress["modelCalls"] = self.spec.budget.maxModelCalls
+        self.runtime = TrainingExecution(self.spec, TrainingProgress.model_validate(progress), self.callbacks.training_runtime)
+        with self.assertRaises(TrainingContractError) as blocked:
+            await self.runtime.reserve(model=True, repair=True)
+        self.assertEqual(blocked.exception.code, "MODEL_BUDGET_EXHAUSTED")
+        row = {"context_json": {"trainingContract": self.spec.model_dump(mode="json")}, "training_runtime_json": progress}
+        self.assertEqual(retry_block(row).code, "MODEL_BUDGET_EXHAUSTED")
+        row["training_runtime_json"]["modelCalls"] = 1
+        row["training_runtime_json"]["repairRounds"] = self.spec.budget.maxRepairRounds
+        self.assertEqual(retry_block(row).code, "REPAIR_BUDGET_EXHAUSTED")
+
+    async def test_utility_changes_selected_plan_and_records_adoption(self):
+        catalog = [*CATALOG, {"id": "redis-extra", "version": 1, "topic": "Redis"},
+                   {"id": "mysql-extra", "version": 1, "topic": "MySQL"}]
+        spec = contract({"questionCount": 3}).model_copy(update={"learningVersion": "objective-practice-v2-utility"})
+        selections = []
+        for correct in (False, True):
+            attempts = [{"attemptId": f"a-{i}", "questionId": f"history-{i}", "questionVersion": 1, "topic": "Redis",
+                         "submittedAt": NOW - timedelta(days=i), "correct": correct} for i in range(3)]
+            evidence = learning_state(attempts, spec.requiredSkills, NOW)
+            learning = with_training_utility(evidence, job_skills=spec.jobSkills, preferred=[], as_of=NOW,
+                                             weights=TrainingUtilityWeights())
+            utility = question_utilities(catalog, learning)
+            ordered = order_questions(catalog, JOB, practice_targets=learning_candidates(catalog, learning), utility=utility)
+            witness = []
+            frozen = feasible_questions(spec, ordered, utility=utility, witness=witness)
+            run = self.run.model_copy(update={"practiceLearning": learning, "trainingCatalog": frozen,
+                                              "context": {**self.run.context, "trainingFeasibility": {"witness": witness}}})
+            runtime = TrainingExecution(spec, None, self.callbacks.training_runtime)
+
+            def bind(*args, tool_choice):
+                async def invoke(messages):
+                    data = json.loads(messages[-1].content)
+                    self.assertIn("confidence", data["trainingPriorities"][0])
+                    refs = data["context"]["trainingFeasibility"]["witness"]
+                    draft = {"analysis": "按推荐训练", "experienceIds": [], "questions": refs,
+                             "schedule": [{"title": "练习", "skill": None, "scheduledDate": None,
+                                           "questionRefs": [ref["id"]]} for ref in refs]}
+                    return AIMessage(content="", tool_calls=[{"name": tool_choice, "args": draft, "id": "fixture"}])
+
+                return SimpleNamespace(ainvoke=invoke)
+
+            self.model.bind_tools = bind
+            await generate_verified_plan(run, self.model, self.trace, {"instructions": "测试"}, run.context, runtime, None)
+            final = self.callbacks.plan.await_args.args[0]["questions"]
+            selections.append({question_key(ref) for ref in final})
+            self.assertEqual(explain_learning(final, frozen, learning, witness)["adoption"], {"accepted": 3, "recommended": 3})
+            self.assertEqual(explain_learning(final[:2], frozen, learning, witness)["adoption"]["accepted"], 2)
+        self.assertIn(("redis-extra", 1), selections[0] - selections[1])
+        self.assertIn(("mysql-extra", 1), selections[1] - selections[0])

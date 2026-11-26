@@ -6,7 +6,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from app.services.career_question_catalog import question_key
-from app.services.career_training_contract import QuestionId, QuestionRef, TrainingContract, topic_skills
+from app.services.career_training_contract import QuestionId, QuestionRef, TrainingContract, priority_order_matches, topic_skills
 
 
 class StudyStep(BaseModel):
@@ -84,6 +84,7 @@ def verify_plan(
     allowed = {question_key(item): item for item in catalog}
     catalog_ids = {key[0] for key in allowed}
     chosen: dict[str, set[str]] = {}
+    topics_by_id = {}
     refs = set()
     ids = set()
     required = set(contract.requiredSkills)
@@ -103,6 +104,7 @@ def verify_plan(
         if contract.excludeCompleted and item.get("practiceCompleted"):
             report.add("QUESTION_ALREADY_COMPLETED", field, "该题在提交任务时已完成。")
         chosen[ref.id] = topic_skills(item.get("topic", ""), required)
+        topics_by_id[ref.id] = item.get("topic", "")
         refs.add(key)
     if contract.questionCount is not None and len(plan.questions) != contract.questionCount:
         report.add("QUESTION_COUNT_MISMATCH", "questions", f"计划须包含 {contract.questionCount} 道题。",
@@ -153,10 +155,17 @@ def verify_plan(
     if ids - scheduled:
         report.add("UNSCHEDULED_QUESTION", "schedule", "每道选中题目都必须出现在学习步骤中。")
     priorities = [starts[skill] for skill in contract.prioritySkills if skill in starts]
-    if priorities != sorted(priorities) or (priorities and first_unprioritized is not None
-                                            and max(priorities) > first_unprioritized):
+    mismatch = priorities != sorted(priorities) or (priorities and first_unprioritized is not None
+                                                     and max(priorities) > first_unprioritized)
+    if contract.version == 2:
+        topics = [topics_by_id.get(identifier, "") for step in plan.schedule for identifier in step.questionRefs]
+        mismatch = len(topics_by_id) == len(ids) and not priority_order_matches(contract, topics)
+    if mismatch:
+        details = {"prioritySkills": contract.prioritySkills}
+        if contract.version == 2:
+            details["orderMode"] = contract.orderMode
         report.add("PRIORITY_ORDER_MISMATCH", "schedule", "学习步骤须遵守优先技能的顺序。",
-                   context={"prioritySkills": contract.prioritySkills})
+                   context=details)
     return report
 
 

@@ -38,6 +38,7 @@ class TrainingRequest(JobRequest):
     skillId: UUID | None = None
     previousPlanId: UUID | None = None
     reviewTaskId: UUID | None = None
+    restartTaskId: UUID | None = None
     requirements: TrainingRequirements | None = None
 
 
@@ -143,6 +144,10 @@ async def submit(
     if isinstance(body, TrainingRequest):
         if pinned:
             context["studyConstraints"] = pinned
+        if body.restartTaskId is not None:
+            original = await queue.owned(db.user, str(body.restartTaskId))
+            if original["job_id"] != job["id"] or original["kind"] != "TRAINING":
+                raise BizError("请选择本岗位的原备考任务", code=409, status_code=409)
         service = CareerTraining(db)
         try:
             if settings.career_training_harness == "v2":

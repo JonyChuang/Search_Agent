@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Alert, Button, Card, Collapse, Empty, Popconfirm, Space, Spin, Tag, Typography } from 'antd'
+import { Link } from 'react-router-dom'
 import { careerWorkflow, type CareerTask, type TaskKind } from '@/api/careerWorkflow'
 import { useCareerAction } from './useCareerAction'
 import { useCareerQuery } from './useCareerQuery'
 import TaskDetails from './TaskDetails'
+import { preparationPath } from './paths'
 
 const { Paragraph, Text } = Typography
 const status = {
@@ -97,13 +99,16 @@ export default function TaskHistory({ kind, jobId, taskId, content, render, rend
           </Paragraph>
           {canInterrupt && (pending || paused || task.status === 'FAILED') && <Space wrap>
             {pending && <Button size="small" loading={action.saving} onClick={() => change('PAUSE')}>暂停任务</Button>}
-            {paused && <Button size="small" loading={action.saving} onClick={() => change('RESUME')}>继续任务</Button>}
+            {paused && !task.retryBlocked && <Button size="small" loading={action.saving} onClick={() => change('RESUME')}>继续任务</Button>}
             <Popconfirm title="取消这个任务？" onConfirm={() => change('CANCEL')}>
               <Button size="small" danger disabled={action.saving}>取消任务</Button>
             </Popconfirm>
           </Space>}
-          {task.error && <Alert type="error" message={task.error} action={
-            <Button loading={action.saving} onClick={() => action.run(async () => {
+          {(task.error || task.retryBlocked) && <Alert type="error" message={task.error ?? task.retryBlocked?.message}
+            description={task.error && task.retryBlocked?.message !== task.error ? task.retryBlocked?.message : undefined}
+            action={task.retryBlocked && task.kind === 'TRAINING'
+              ? <Link to={preparationPath('plan', { ...(task.request.jobId ? { job: task.request.jobId } : {}), restart: task.id })}>创建新计划</Link>
+              : <Button loading={action.saving} onClick={() => action.run(async () => {
               await careerWorkflow.retry(task.id)
               retry()
             })}>重试执行</Button>

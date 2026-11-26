@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from app.services.career_learning_state import LEARNING_V2
+from app.services.career_learning_state import LEARNING_UTILITY, LEARNING_V2
 from app.services.career_question_catalog import question_key, required_skills, skills_in
 from app.services.career_training_contract import topic_skills
 
@@ -41,7 +41,7 @@ def learn_from_attempts(attempts: list[dict], job: dict) -> dict | None:
 
 def learning_candidates(catalog: list[dict], learning: dict | None) -> dict[tuple[str, int], tuple[str, ...]]:
     """Map eligible, unattempted question versions to current practice priorities."""
-    if not learning or learning.get("policyVersion") not in {POLICY_VERSION, LEARNING_V2}:
+    if not learning or learning.get("policyVersion") not in {POLICY_VERSION, LEARNING_V2, LEARNING_UTILITY}:
         return {}
     attempted = {tuple(key) for key in learning["attempted"]}
     priorities = [item["skill"] for item in learning["priorities"]]
@@ -60,11 +60,20 @@ def learning_candidates(catalog: list[dict], learning: dict | None) -> dict[tupl
     return matches
 
 
-def explain_learning(questions: list[dict], catalog: list[dict], learning: dict) -> dict:
+def question_utilities(catalog: list[dict], learning: dict | None) -> dict[tuple[str, int], tuple[str, float]]:
+    if not learning or learning.get("policyVersion") != LEARNING_UTILITY:
+        return {}
+    scores = {item["skill"]: item["trainingUtility"] for item in learning["priorities"]}
+    matches = learning_candidates(catalog, learning)
+    # Assign one dominant soft benefit per question. Business coverage still counts every matching skill.
+    return {key: (skills[0], scores[skills[0]]) for key, skills in matches.items()}
+
+
+def explain_learning(questions: list[dict], catalog: list[dict], learning: dict, recommended: list[dict] | None = None) -> dict:
     candidates = learning_candidates(catalog, learning)
     selected = {skill for question in questions for skill in candidates.get(question_key(question), ())}
     available = {skill for skills in candidates.values() for skill in skills}
-    return {
+    result = {
         "policyVersion": learning["policyVersion"],
         "priorities": [
             {**item, "status": "SELECTED" if item["skill"] in selected else
@@ -72,3 +81,9 @@ def explain_learning(questions: list[dict], catalog: list[dict], learning: dict)
             for item in learning["priorities"]
         ],
     }
+    if recommended is not None and learning.get("policyVersion") == LEARNING_UTILITY:
+        references = {question_key(item) for item in recommended} & candidates.keys()
+        if references:
+            accepted = references & {question_key(item) for item in questions}
+            result["adoption"] = {"accepted": len(accepted), "recommended": len(references)}
+    return result

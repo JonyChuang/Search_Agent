@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Alert, Button, Checkbox, Collapse, DatePicker, Form, InputNumber, Select, Space, Typography } from 'antd'
 import type { Dayjs } from 'dayjs'
 import { Link, useSearchParams } from 'react-router-dom'
@@ -23,6 +23,7 @@ interface PlanForm {
   questionCount?: number | null
   deadline?: Dayjs | null
   prioritySkills?: string[]
+  strictOrder?: boolean
   excludeCompleted?: boolean
 }
 
@@ -50,8 +51,10 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
   const [skillId, setSkillId] = useState<string>()
   const training = useCareerAction()
   const fromInterview = params.get('create') === '1'
-  const showCreateFirst = Boolean(linkedDocument || source || fromInterview)
+  const restart = params.get('restart')
+  const showCreateFirst = Boolean(linkedDocument || source || fromInterview || restart)
   const [createOpen, setCreateOpen] = useState(showCreateFirst)
+  useEffect(() => { if (restart) setCreateOpen(true) }, [restart])
 
   const createPanel = <Collapse activeKey={createOpen ? ['create'] : []} onChange={(keys) => setCreateOpen(keys.includes('create'))}
     items={[{ key: 'create', label: '创建训练计划', children: <>
@@ -62,15 +65,17 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
         <Form layout="vertical" onFinish={(values: PlanForm) => training.run(async () => {
           const input = job ? { jobId: job.id, preparationId: latest?.id, preferredQuestion }
             : { jobId: values.jobId, role: values.role }
-          const { questionCount, deadline, prioritySkills, excludeCompleted } = values
+          const { questionCount, deadline, prioritySkills, excludeCompleted, strictOrder } = values
           const requirements = questionCount || deadline || prioritySkills?.length || excludeCompleted ? {
             questionCount: questionCount ?? undefined,
             deadline: deadline?.format('YYYY-MM-DD'),
             prioritySkills: prioritySkills?.length ? prioritySkills : undefined,
+            orderMode: strictOrder && prioritySkills?.length ? ('STRICT_PHASE_ORDER' as const) : undefined,
             excludeCompleted: excludeCompleted || undefined,
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           } : undefined
-          await training.submit('training', { ...input, documentIds, skillId, requirements }, careerWorkflow.training)
+          const restartTaskId = restart && /^[0-9a-f-]{36}$/.test(restart) ? restart : undefined
+          await training.submit('training', { ...input, documentIds, skillId, requirements, restartTaskId }, careerWorkflow.training)
           setCreateOpen(false)
           refreshTraining((n) => n + 1)
         })}>
@@ -101,6 +106,9 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
           </Space>
           <Form.Item name="prioritySkills" label="优先复习技能">
             <Select mode="tags" maxCount={8} tokenSeparators={[',', '，']} placeholder="按复习顺序输入技能并按回车" />
+          </Form.Item>
+          <Form.Item name="strictOrder" valuePropName="checked">
+            <Checkbox>每项优先技能学完后再进入下一项</Checkbox>
           </Form.Item>
           <Form.Item name="excludeCompleted" valuePropName="checked">
             <Checkbox>排除已完成的题目</Checkbox>

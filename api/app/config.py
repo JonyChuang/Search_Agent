@@ -9,6 +9,8 @@ from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.schemas.mcp_schema import ReviewedMCPRead
+from app.services.career_learning_state import TrainingUtilityWeights
+from app.services.career_training_contract import LearningVersion
 
 _API_ROOT = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = _API_ROOT.parent
@@ -42,7 +44,8 @@ class Settings(BaseSettings):
     career_native_worker_enabled: bool = False
     career_training_harness: Literal["v1", "v2"] = "v2"
     career_training_repair: Literal["local-v1", "regenerate-v1"] = "local-v1"
-    career_training_learning: Literal["objective-practice-v1", "objective-practice-v2"] = "objective-practice-v1"
+    career_training_learning: LearningVersion = "objective-practice-v1"
+    career_training_utility_weights: TrainingUtilityWeights | None = None
     mcp_shared_tool_cache_enabled: bool = False
     mcp_reviewed_reads: list[ReviewedMCPRead] = []
     memory_shared_recall_cache_enabled: bool = False

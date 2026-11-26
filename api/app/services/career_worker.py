@@ -32,7 +32,7 @@ from app.services.career_task_service import (
 from app.services.career_training import CareerTraining
 from app.services.career_training_contract import TrainingContract, TrainingContractError
 from app.services.career_training_harness import explain_learning
-from app.services.career_training_runtime import TrainingExecution, TrainingProgress
+from app.services.career_training_runtime import TrainingExecution, TrainingProgress, retry_block
 from app.services.career_training_verifier import TrainingPlan, verify_plan
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,8 @@ class NativeCareerCheckpoints:
             draft = {**plan, "questions": selected}
             learning = active["context_json"].get("practiceLearning")
             if learning:
-                draft["learning"] = explain_learning(selected, saved, learning)
+                witness = raw.get("trainingFeasibility", {}).get("witness")
+                draft["learning"] = explain_learning(selected, saved, learning, witness)
             await queue.checkpoint(self.row, "training_draft_json", draft)
 
     async def record_event(self, value: dict) -> None:
@@ -219,8 +220,12 @@ async def _run_claimed(row: dict) -> str:
                 return "STALE"
             result = current["training_draft_json"]
             error = None if result is not None else error or "Agent 未生成训练计划"
-        if error and transient and await queue.retry_transient(row):
-            return "RETRY_QUEUED"
+        if error and transient:
+            retry_row = current if row["kind"] == "TRAINING" else row
+            if blocked := retry_block(retry_row):
+                error, failure = str(blocked), blocked.code
+            elif await queue.retry_transient(retry_row):
+                return "RETRY_QUEUED"
         if row["kind"] == "TRAINING" and current["context_json"].get("trainingContract"):
             await record_training_outcome(queue, current, error, failure)
         if row["kind"] == "INTERVIEW_TURN" and error is None:
@@ -231,7 +236,10 @@ async def _run_claimed(row: dict) -> str:
                 apply_evaluation(session, result, False)
                 await interviews.save(session)
         else:
-            finished = await queue.finish(row, result, error)
+            if error and row["context_json"].get("trainingContract"):
+                finished = await queue.finish(row, result, error, failure_code=failure)
+            else:
+                finished = await queue.finish(row, result, error)
     return ("FAILED" if error else "SUCCEEDED") if finished else "STALE"
 
 

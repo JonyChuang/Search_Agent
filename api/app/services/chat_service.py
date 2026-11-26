@@ -481,7 +481,9 @@ class ChatService:
                                       if body.career_job_id else {})},
                     )
                     if body.career_job_id and constraints:
-                        await CareerContextVersions(session, user_id, conv.id, body.career_job_id).save(message=user_message)
+                        await CareerContextVersions(session, user_id, conv.id, body.career_job_id).save(
+                            message=user_message, time_zone=body.career_time_zone,
+                        )
                     else:
                         await svc.msg_repo.add(user_message)
         except Exception as e:
@@ -836,7 +838,16 @@ class ChatService:
         if career and changes and not (current_request or body.image_keys or attachments):
             saved = await CareerContextVersions(self.session, user_id, conv.id, career.job_id).read()
             state = saved["state"]
-            description = [f"当前{field}：{state[field][1]}" if field in state else f"当前未设置{field}" for field in changes]
+            details = {item["field"]: item for item in constraint_details(state, saved["version"], saved.get("field_meta"))}
+            description = []
+            for field in changes:
+                item = details.get(field)
+                if item and field == "截止时间" and not item["confirmed"]:
+                    description.append("请用 YYYY-MM-DD 确认固定截止日期")
+                elif item:
+                    description.append(f"当前{field}：{item.get('normalizedValue') or item['value']}")
+                else:
+                    description.append(f"当前未设置{field}")
             yield {"type": "token", "text": "。".join(description) + "。"}
             return
         agent = await self.agent_repo.get_by_user(user_id)

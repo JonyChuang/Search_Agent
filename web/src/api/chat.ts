@@ -11,7 +11,8 @@ export interface CareerContextState {
   state: Record<string, [string | null, string]>
   source: string
   constraint_types?: string[]
-  constraints?: { field: string; value: string; source_message_id: string | null; version: number; confirmed: boolean }[]
+  constraints?: { field: string; value: string; source_message_id: string | null; version: number; confirmed: boolean;
+    normalizedValue?: string; rawValue?: string; timeZone?: string | null }[]
   job_facts?: { location: string | null }
 }
 
@@ -22,7 +23,7 @@ export const careerContextApi = {
     })
   },
   save(conversation: string, job: string, body: {
-    expected_version: number; fields?: Record<string, string | null>; rollback_to?: number
+    expected_version: number; fields?: Record<string, string | null>; rollback_to?: number; time_zone?: string
   }) {
     return client.put<unknown, Wrapped<CareerContextState>>(`/conversations/${conversation}/career-context/${job}`, body)
   },

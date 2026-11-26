@@ -58,6 +58,9 @@ class Case:
     fault: str | None = None
     recovery: bool = False
     history: str | None = None
+    request_text: str = ""
+    pinned: list[dict] = field(default_factory=list)
+    expected: str = "success"
 
 
 CASES = (
@@ -67,13 +70,25 @@ CASES = (
     Case("unknown_question", fault="unknown"), Case("duplicate_question", fault="duplicate"),
     Case("pinned_question", {"requiredQuestions": [PIN]}, "pinned"), Case("missing_skill", fault="coverage"),
     Case("late_step", {"deadline": "2026-11-27"}, "late"),
-    Case("infeasible_catalog", {"requiredSkills": ["Spring"]}), Case("context_budget", fault="budget"),
+    Case("infeasible_catalog", {"requiredSkills": ["Spring"]}, expected="reject"),
+    Case("context_budget", fault="budget", expected="budget"),
     Case("exit_during_repair", fault="unknown", recovery=True),
     Case("takeover_verified_checkpoint", fault="version", recovery=True),
     Case("weak_evidence", {"questionCount": 3, "requiredQuestions": [PIN]}, history="weak"),
     Case("cold_start", history="cold"), Case("recent_improvement", history="improved"),
     Case("malformed_tool", fault="schema"), Case("unknown_version", fault="version"),
     Case("completed_question", {"excludeCompleted": True}, "completed"),
+)
+
+EXTENDED_CASES = (
+    Case("negated_count", request_text="不用安排五道题"),
+    Case("conditional_count", request_text="如果有时间，安排五道题"),
+    Case("range_requires_confirmation", request_text="安排三到五道题", expected="clarify"),
+    Case("corrected_deadline", {"timeZone": "Asia/Shanghai"}, request_text="截止日期改为明天",
+         pinned=[{"field": "截止时间", "value": "下周一", "normalizedValue": "2026-11-30", "confirmed": True}]),
+    Case("strict_interleaving", {"questionCount": 3}, "interleave",
+         request_text="先完成 Redis 阶段后再复习 MySQL"),
+    Case("long_context_fallback", fault="long_context"),
 )
 
 
@@ -130,6 +145,9 @@ def inject(plan: dict, case: Case, contract_visible: bool) -> dict:
         case "completed":
             draft["questions"][0] = {"id": "redis-3", "version": 1}
             draft["schedule"][0]["questionRefs"] = ["redis-3"]
+        case "interleave":
+            draft["schedule"][1], draft["schedule"][2] = draft["schedule"][2], draft["schedule"][1]
+            draft["questions"][1], draft["questions"][2] = draft["questions"][2], draft["questions"][1]
     return draft
 
 
@@ -176,21 +194,25 @@ def observe_legacy(result: dict) -> TrainingPlan:
 async def execute_case(case: Case, group: str, real_model=None, model_budget=None, judge=None) -> dict:
     started = perf_counter()
     user, job, task = uuid4(), uuid4(), uuid4()
-    spec = build_contract(
-        user=str(user), job_id=str(job), conversation=None, job=JOB, preferred=None,
-        requirements=TrainingRequirements.model_validate(case.requirements), request_text="", pinned=[],
-        created_at=CREATED, repair="regenerate-v1" if group == "C" else "local-v1",
-        learning=LEARNING_V2 if group == "E" else POLICY_VERSION,
-    )
+    report = {"case": case.name, "expected": case.expected, "saved": False, "success": False, "accepted": False,
+              "calls": 0, "recordedUsage": [], "firstPass": None, "repair": None, "recovery": None,
+              "required": [0, 0], "weak": [0, int(case.history == "weak")], "pinned": [0, 0],
+              "analysisKept": None, "validQuestionRetention": None}
+    try:
+        spec = build_contract(
+            user=str(user), job_id=str(job), conversation=None, job=JOB, preferred=None,
+            requirements=TrainingRequirements.model_validate(case.requirements), request_text=case.request_text,
+            pinned=case.pinned, created_at=CREATED, repair="regenerate-v1" if group == "C" else "local-v1",
+            learning=LEARNING_V2 if group == "E" else POLICY_VERSION,
+        )
+    except TrainingContractError as error:
+        return {**report, "error": error.code, "elapsedMs": (perf_counter() - started) * 1000}
     attempts = attempts_for(case.history)
     learning = (learning_state(attempts, spec.requiredSkills, CREATED) if group == "E"
                 else learn_from_attempts(attempts, JOB))
     catalog = [{**item, "practiceCompleted": True} if case.fault == "completed" and item["id"] == "redis-3" else item
                for item in CATALOG]
-    report = {"case": case.name, "saved": False, "success": False, "accepted": False,
-              "calls": 0, "recordedUsage": [], "firstPass": None, "repair": None, "recovery": None,
-              "required": [0, len(spec.requiredSkills)], "weak": [0, int(case.history == "weak")],
-              "pinned": [0, len(spec.requiredQuestions)], "analysisKept": None, "validQuestionRetention": None}
+    report.update(required=[0, len(spec.requiredSkills)], pinned=[0, len(spec.requiredQuestions)])
     targets = learning_candidates(catalog, learning)
     ordered = order_questions(catalog, JOB, PIN["id"] if spec.requiredQuestions else None, targets)
     try:
@@ -205,6 +227,9 @@ async def execute_case(case: Case, group: str, real_model=None, model_budget=Non
     model_budget = 500 if case.fault == "budget" else model_budget
     run = CareerRun(id=task, lease=uuid4(), userId=user, kind="TRAINING", context={"job": JOB},
                     trainingCatalog=ordered, practiceLearning=learning)
+    if case.fault == "long_context":
+        run.context["documents"] = [{"excerpt": "可选资料 " * 4000}]
+        model_budget = min(2200, model_budget) if model_budget else 2200
     if spec.requiredQuestions:
         run.context["preferredQuestion"] = PIN["id"]
     if group == "B":
@@ -302,6 +327,8 @@ async def execute_case(case: Case, group: str, real_model=None, model_budget=Non
     if interrupted:
         report["recovery"] = report["success"]
     report["modelReservations"] = durable.get("modelCalls", report["calls"])
+    report["repairRounds"] = durable.get("repairRounds")
+    report["transientRetries"] = durable.get("transientRetries", 0)
     report["elapsedMs"] = (perf_counter() - started) * 1000
     return report
 
@@ -320,6 +347,11 @@ def summarize(rows: list[dict]) -> dict:
     usage = [tokens for row in rows for tokens in row["recordedUsage"]]
     scores = [row["semanticScore"] for row in rows if row.get("semanticScore") is not None]
     latencies = sorted(row["elapsedMs"] for row in rows)
+    possible = [row for row in rows if row["expected"] == "success"]
+    saved = [row for row in rows if row["saved"]]
+    expected_rejections = {"reject": "TASK_CONTRACT_UNSATISFIABLE", "clarify": "CONTRACT_CONFIRMATION_REQUIRED",
+                           "budget": "CareerContextTooLarge"}
+    rejected = [row for row in rows if row["expected"] in expected_rejections]
     return {
         "taskSuccess": boolean_metric("success"), "constraintSatisfaction": [sum(row["accepted"] for row in rows),
                                                                           sum(row["saved"] for row in rows)],
@@ -331,11 +363,17 @@ def summarize(rows: list[dict]) -> dict:
         "checkpointRecovery": boolean_metric("recovery"), "validQuestionRetention": coverage("validQuestionRetention"),
         "analysisRetention": boolean_metric("analysisKept"),
         "semanticMean": round(sum(scores) / len(scores), 4) if scores else None, "semanticSamples": len(scores),
+        "feasibleSuccess": [sum(row["success"] for row in possible), len(possible)],
+        "falseAcceptances": [sum(not row["accepted"] for row in saved), len(saved)],
+        "falseRejections": [sum(not row["saved"] for row in possible), len(possible)],
+        "correctRejections": [sum(row.get("error") == expected_rejections[row["expected"]] for row in rejected), len(rejected)],
+        "effectiveRepairRounds": sum(row.get("repairRounds") or 0 for row in rows),
+        "transientRetries": sum(row.get("transientRetries", 0) for row in rows),
         "failures": {row["case"]: row.get("error") for row in rows if not row["success"]},
     }
 
 
-async def main(user: UUID | None, *, semantic: bool):
+async def main(user: UUID | None, *, semantic: bool, groups="ABCDE", repeat=1, extended=False, details=False):
     model = budget = judge = None
     try:
         if user:
@@ -346,11 +384,15 @@ async def main(user: UUID | None, *, semantic: bool):
                     judge = await build_verifier(session, user, kind=settings.loop_verifier_kind, generator_model=model)
             window, reserve = chat_context_budget(config, career=True)
             model.max_tokens, budget = reserve, window - reserve
-        for group in "ABCDE":
-            rows = [await execute_case(case, group, model, budget, judge) for case in CASES]
+        cases = (*CASES, *EXTENDED_CASES) if extended else CASES
+        for group in groups:
+            rows = [{**await execute_case(case, group, model, budget, judge), "repeat": iteration + 1}
+                    for iteration in range(repeat) for case in cases]
+            runs = [summarize(rows[i:i + len(cases)])["feasibleSuccess"] for i in range(0, len(rows), len(cases))]
             print(json.dumps({"mode": "real_model" if user else "simulated_model", "group": group,
                               "model": model.model_name if model else ScriptedModel.model_name,
-                              "cases": len(rows), **summarize(rows)}, ensure_ascii=False), flush=True)
+                              "temperature": 0.2 if model else None, "cases": len(rows), "feasibleSuccessPerRun": runs,
+                              **summarize(rows), **({"caseDetails": rows} if details else {})}, ensure_ascii=False), flush=True)
     finally:
         if user:
             await close()
@@ -360,7 +402,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live-user", type=UUID, help="显式授权使用此测试账户配置的模型，仅发送合成输入。")
     parser.add_argument("--semantic", action="store_true", help="另行调用配置的 Verifier，对通过业务校验的结果评分。")
+    parser.add_argument("--groups", default="ABCDE")
+    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--extended", action="store_true")
+    parser.add_argument("--details", action="store_true")
     args = parser.parse_args()
     if args.semantic and not args.live_user:
         parser.error("--semantic requires --live-user")
-    asyncio.run(main(args.live_user, semantic=args.semantic))
+    if not 1 <= args.repeat <= 20 or not args.groups or any(group not in "ABCDE" for group in args.groups):
+        parser.error("--repeat must be 1–20 and --groups must contain only A–E")
+    asyncio.run(main(args.live_user, semantic=args.semantic, groups=args.groups, repeat=args.repeat,
+                     extended=args.extended, details=args.details))

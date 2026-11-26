@@ -31,6 +31,8 @@ _AMBIGUOUS = re.compile(
     r"|(?:怎么|如何|重新安排|重新制定|重新生成|创建|执行|总结|解释|查一下)|生成(?=.{0,8}(?:计划|简历|报告))"
 )
 _SENTENCES = re.compile(r"(?<=[。！？；!?;])")
+_CONDITIONAL = re.compile(r"如果|除非|倘若|要是|假如")
+_DEADLINE_EDIT = re.compile(r"(?:改成|改为|调整为|重设|重新设为)")
 _CLAUSES = re.compile(r"([，,]\s*|\s*(?:并|同时|然后|接着)(?=请|帮我|给我|重新安排|重新制定|创建|生成|查询))")
 _HISTORICAL_PINNED = re.compile(rf"{_FIELD}|现在(?:我)?决定(?:重点)?投递|(?:不)?接受异地|简历(?:仅|只)用")
 IMPORTANT = re.compile(r"确认|要求|目标|截止|限制|只用|保留|偏好|注意|负责|证据|真实|阶段")
@@ -79,6 +81,8 @@ def _constraint_change(clause: str) -> tuple[str, str | None] | None:
 
 
 def _parse_sentence(sentence: str) -> tuple[dict[str, str | None], str]:
+    if _CONDITIONAL.search(sentence):
+        return {}, sentence
     direct = _constraint_change(sentence)
     if direct is not None:
         return dict([direct]), ""
@@ -92,6 +96,9 @@ def _parse_sentence(sentence: str) -> tuple[dict[str, str | None], str]:
         following = parts[offset + 2].lstrip() if offset + 2 < len(parts) else ""
         change = _constraint_change(clause)
         if change is not None and (not following or _INTENT.match(following) or _constraint_change(following)):
+            if (change[0] == "截止时间" and change[0] in updates and updates[change[0]] != change[1]
+                    and change[1] is not None and not _DEADLINE_EDIT.search(clause)):
+                return {}, sentence
             updates[change[0]] = change[1]
         else:
             if remaining:
@@ -117,6 +124,9 @@ def parse_constraint_request(text: str) -> tuple[dict[str, str | None], str]:
             continue
         for sentence in _SENTENCES.split(line):
             changes, request = _parse_sentence(sentence)
+            if ("截止时间" in updates and changes.get("截止时间") is not None
+                    and changes["截止时间"] != updates["截止时间"] and not _DEADLINE_EDIT.search(sentence)):
+                return {}, text.strip()
             updates.update(changes)
             remainder.append(request)
     return updates, "".join(remainder).strip()
@@ -169,7 +179,10 @@ async def latest_constraints(messages) -> dict:
 def constraint_details(current: dict, version: int, metadata: dict | None = None) -> list[dict]:
     return [
         {"field": field, "source_message_id": source, "value": value, "version": version, "confirmed": version > 0,
-         **(metadata or {}).get(field, {})}
+         **(metadata or {}).get(field, {}),
+         **({"confirmed": False, "status": "AMBIGUOUS"}
+            if field == "截止时间" and not (metadata or {}).get(field, {}).get("normalizedValue")
+            and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) else {})}
         for field, (source, value) in current.items() if value is not None
     ]
 

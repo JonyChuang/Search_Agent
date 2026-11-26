@@ -70,7 +70,8 @@ class CareerChatToolsTest(IsolatedAsyncioTestCase):
         )
         service = ChatService(None)
         source = str(uuid4())
-        saved = {"version": 4, "state": {"截止时间": [source, "周五"]}}
+        saved = {"version": 4, "state": {"截止时间": [source, "周五"]},
+                 "field_meta": {"截止时间": {"normalizedValue": "2026-11-27", "rawValue": "周五"}}}
         with (patch.object(settings, "career_mysql_host", "localhost"),
               patch("app.services.chat_service.CareerContextVersions") as versions,
               patch.object(CareerChatTools, "create_plan", new=AsyncMock(return_value=str(uuid4()))) as create):
@@ -78,6 +79,7 @@ class CareerChatToolsTest(IsolatedAsyncioTestCase):
             conv = SimpleNamespace(id=uuid4())
             events = [event async for event in service._generate_events(uuid4(), conv, body, [], [], "Bearer fixture")]
         create.assert_awaited_once_with(body.career_plan_request_id, pinned=[
-            {"field": "截止时间", "value": "周五", "source_message_id": source, "confirmed": True, "version": 4},
+            {"field": "截止时间", "value": "周五", "source_message_id": source, "confirmed": True, "version": 4,
+             "normalizedValue": "2026-11-27", "rawValue": "周五"},
         ], conversation_id=str(conv.id), request_text="请按照新的截止时间重新安排我的训练计划。", time_zone=None)
         self.assertEqual(events[1]["status"], "success")

@@ -3,10 +3,25 @@
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from pydantic import BaseModel, Field
+
 from app.services.career_training_contract import topic_skills
 
 LEARNING_V2 = "objective-practice-v2"
+LEARNING_UTILITY = "objective-practice-v2-utility"
 HALF_LIFE_DAYS = 14
+
+
+class TrainingUtilityWeights(BaseModel):
+    weak: float = Field(default=2.0, gt=0, le=10)
+    evidenceGap: float = Field(default=2.0, ge=0, le=10)
+    explore: float = Field(default=1.4, gt=0, le=10)
+    uncertainty: float = Field(default=0.6, ge=0, le=10)
+    consolidate: float = Field(default=0.7, gt=0, le=10)
+    dueReview: float = Field(default=0.8, ge=0, le=10)
+    recency: float = Field(default=0.5, ge=0, le=10)
+    jobSkill: float = Field(default=0.2, ge=0, le=10)
+    preference: float = Field(default=0.25, ge=0, le=10)
 
 
 def _timestamp(value: datetime | str) -> datetime:
@@ -59,3 +74,25 @@ def learning_state(attempts: list[dict], skills: list[str], as_of: datetime) -> 
         ("WEAK", "EXPLORE", "CONSOLIDATE").index(item["masteryStatus"]), item["masteryScore"], item["skill"],
     ))
     return {"policyVersion": LEARNING_V2, "priorities": priorities, "attempted": [list(key) for key in sorted(attempted)]}
+
+
+def with_training_utility(
+    learning: dict, *, job_skills: list[str], preferred: list[str], as_of: datetime, weights: TrainingUtilityWeights,
+) -> dict:
+    priorities = []
+    for item in learning["priorities"]:
+        status = item["masteryStatus"]
+        confidence = item["confidence"]
+        last = item["lastPracticedAt"]
+        age = min(30, max(0, (as_of - _timestamp(last)).days)) / 30 if last else 0
+        if status == "WEAK":
+            score = weights.weak + weights.evidenceGap * confidence * (1 - item["masteryScore"])
+        elif status == "EXPLORE":
+            score = weights.explore + weights.uncertainty * (1 - confidence)
+        else:
+            score = weights.consolidate + weights.dueReview * item["reviewDue"]
+        score += weights.recency * age
+        score += weights.jobSkill * (item["skill"] in job_skills) + weights.preference * (item["skill"] in preferred)
+        priorities.append({**item, "trainingUtility": round(score, 4)})
+    priorities.sort(key=lambda item: (-item["trainingUtility"], item["skill"]))
+    return {**learning, "policyVersion": LEARNING_UTILITY, "priorities": priorities, "utilityWeights": weights.model_dump()}

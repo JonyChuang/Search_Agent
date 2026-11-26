@@ -9,9 +9,9 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.db.career import career_transaction, close
-from app.services.career_learning_state import learning_state
+from app.services.career_learning_state import TrainingUtilityWeights, learning_state, with_training_utility
 from app.services.career_question_catalog import order_questions, question_key, required_skills, skills_in
-from app.services.career_training_harness import learn_from_attempts, learning_candidates
+from app.services.career_training_harness import learn_from_attempts, learning_candidates, question_utilities
 
 
 async def replay(user: UUID, job: UUID) -> dict:
@@ -19,7 +19,9 @@ async def replay(user: UUID, job: UUID) -> dict:
                "weak_skills": 0, "covered_weak_skills": 0, "control_covered_weak_skills": 0,
                "followup_attempts": 0, "followup_correct": 0,
                "v1_prioritized_weak_skills": 0, "v2_prioritized_weak_skills": 0,
-               "v1_top_k_weak_covered": 0, "v2_top_k_weak_covered": 0, "v2_exploration_skills": 0}
+               "utility_prioritized_weak_skills": 0, "v1_top_k_weak_covered": 0, "v2_top_k_weak_covered": 0,
+               "utility_top_k_weak_covered": 0, "v2_exploration_skills": 0,
+               "independent_followup_attempts": 0, "independent_followup_correct": 0}
     bind = {"user": str(user), "job": str(job)}
     async with career_transaction() as db:
         plans = (await db.execute(text("""
@@ -34,7 +36,9 @@ async def replay(user: UUID, job: UUID) -> dict:
                 ON (q.id, q.version) = (a.question_id, a.question_version)
             WHERE a.user_id = :user AND a.job_id = :job AND
         """
-        for plan in plans:
+        plans = sorted(plans, key=lambda plan: plan["training_draft_at"] or plan["created_at"])
+        seen_attempts = set()
+        for index, plan in enumerate(plans):
             metrics["plans"] += 1
             params = {**bind, "created": plan["created_at"]}
             earlier = (await db.execute(text(attempt_sql + """
@@ -46,14 +50,24 @@ async def replay(user: UUID, job: UUID) -> dict:
             history = [dict(item) for item in earlier]
             control_v1 = learn_from_attempts(history, context["job"])
             skills = (context.get("trainingContract") or {}).get("requiredSkills") or sorted(required_skills(context["job"]))
-            control_v2 = learning_state(history, skills, plan["created_at"].replace(tzinfo=timezone.utc))
+            instant = plan["created_at"].replace(tzinfo=timezone.utc)
+            versions = {}
+            for item in catalog:
+                versions[item["id"]] = max(versions.get(item["id"], 0), item["version"])
+            for item in history:
+                item["currentVersion"] = max(versions.get(item["questionId"], 0), item["questionVersion"])
+            control_v2 = learning_state(history, skills, instant)
+            weighted = with_training_utility(control_v2, job_skills=sorted(required_skills(context["job"])),
+                                             preferred=(context.get("trainingContract") or {}).get("preferredSkills", []),
+                                             as_of=instant, weights=TrainingUtilityWeights())
             chosen = {question_key(item) for item in json.loads(plan["result_json"])["questions"]}
-            for version, policy in (("v1", control_v1), ("v2", control_v2)):
+            for version, policy in (("v1", control_v1), ("v2", control_v2), ("utility", weighted)):
                 priorities = (policy or {}).get("priorities", [])
                 weak = {item["skill"] for item in priorities if item.get("masteryStatus", "WEAK") == "WEAK"}
                 ranked_targets = learning_candidates(catalog, policy)
                 ordered = order_questions(sorted(catalog, key=question_key), context["job"],
-                                          context.get("preferredQuestion"), ranked_targets)
+                                          context.get("preferredQuestion"), ranked_targets,
+                                          utility=question_utilities(catalog, policy))
                 metrics[f"{version}_prioritized_weak_skills"] += len(weak)
                 metrics[f"{version}_top_k_weak_covered"] += len(weak & {
                     skill for item in ordered[:len(chosen)] for skill in ranked_targets.get(question_key(item), ())
@@ -73,18 +87,28 @@ async def replay(user: UUID, job: UUID) -> dict:
             metrics["control_covered_weak_skills"] += len(weak & {
                 skill for item in control[:len(chosen)] for skill in targets.get(question_key(item), ())
             })
+            following = plans[index + 1] if index + 1 < len(plans) else None
+            cutoff = (following["training_draft_at"] or following["created_at"]) if following else None
             later = (await db.execute(text(attempt_sql + """
                 a.submitted_at >= :available AND a.submitted_at < TIMESTAMPADD(DAY, 30, :available)
+                AND (:cutoff IS NULL OR a.submitted_at < :cutoff)
                 ORDER BY a.sequence_id ASC LIMIT 150
-            """), {**params, "available": plan["training_draft_at"] or plan["created_at"]})).mappings().all()
+            """), {**params, "available": plan["training_draft_at"] or plan["created_at"], "cutoff": cutoff})).mappings().all()
             seen = set()
+            earlier_ids = {item["questionId"] for item in history}
+            planned_ids = {identifier for identifier, _ in chosen}
             for item in later:
                 key = item["questionId"], item["questionVersion"]
-                if key in seen or key not in chosen or not (skills_in(item["topic"]) & weak):
+                if key[0] in seen or item["attemptId"] in seen_attempts or not (skills_in(item["topic"]) & weak):
                     continue
-                seen.add(key)
-                metrics["followup_attempts"] += 1
-                metrics["followup_correct"] += bool(item["correct"])
+                seen.add(key[0])
+                seen_attempts.add(item["attemptId"])
+                if key in chosen:
+                    metrics["followup_attempts"] += 1
+                    metrics["followup_correct"] += bool(item["correct"])
+                elif key[0] not in earlier_ids | planned_ids:
+                    metrics["independent_followup_attempts"] += 1
+                    metrics["independent_followup_correct"] += bool(item["correct"])
     return metrics
 
 

@@ -11,6 +11,8 @@ FastAPI 负责求职 API、对话和 Agent 工具编排。独立 Python Career W
 
 训练 Harness V2 使用 MySQL 迁移 `V20__career_training_harness.sql`。API 与 Worker 升级前应用迁移。新任务默认执行 V2 契约和定向修复，练习反馈保留 V1 策略，可通过 `CAREER_TRAINING_LEARNING=objective-practice-v2` 试用带时效和置信度的技能状态。`CAREER_TRAINING_REPAIR=regenerate-v1` 使用整份重生成，`CAREER_TRAINING_HARNESS=v1` 回退新任务的整个执行策略。已提交任务依据各自冻结的版本恢复。架构、回放和对照命令见 [备考 Harness V2 技术报告](career-training-harness-v2.md)。
 
+本轮 V20 数据库结构继续兼容。可按需启用 `CAREER_TRAINING_LEARNING=objective-practice-v2-utility`，并使用 `CAREER_TRAINING_UTILITY_WEIGHTS` 配置 JSON 权重。模型请求、临时重试和有效修复独立计量。固定截止日期在确认时保存其绝对值。完整行为与数据见 [正确性与策略验收](career-training-harness-v2-correctness.md)。
+
 ## 清单落地与验证
 
 | 项目 | 本轮实现 |
