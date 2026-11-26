@@ -6,7 +6,7 @@
 import asyncio
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import app.models  # noqa: F401  确保 ORM 模型注册
@@ -17,6 +17,23 @@ from app.models.user_model import User
 from app.services.daily_review_service import DailyReviewService
 
 logger = get_logger(__name__)
+
+
+@celery_app.task(name="app.tasks.beat.purge_expired_tool_results", ignore_result=True)
+def purge_expired_tool_results_task() -> None:
+    from app.services.tool_results import purge_expired_tool_results
+
+    async def purge():
+        engine = create_task_engine()
+        try:
+            async with async_sessionmaker(engine).begin() as session:
+                count = await purge_expired_tool_results(session)
+                await session.execute(text("DELETE FROM career_queue_samples WHERE sampled_at < now() - interval '30 days'"))
+            logger.info("Expired tool results deleted count=%d", count)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(purge())
 
 
 async def _run() -> int:

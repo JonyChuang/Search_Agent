@@ -18,6 +18,7 @@ _CHANGING_FIELDS = {
     ),
 }
 _SENTENCES = re.compile(r"(?<=[。！？；])|\n")
+_HISTORICAL_PINNED = re.compile(r"复习顺序|截止时间|截止日期|最后期限|求职目标|实习方向|现在(?:我)?决定(?:重点)?投递")
 IMPORTANT = re.compile(r"确认|要求|目标|截止|限制|只用|保留|偏好|注意|负责|证据|真实|阶段")
 CONSTRAINT = re.compile(r"确认|只用|请勿|不要|务必|截止时间|限制|目标是|必须|改为")
 
@@ -40,6 +41,8 @@ def sentences(text: str) -> list[str]:
 
 
 def constraint_field(text: str) -> str | None:
+    if text.rstrip().endswith(("?", "？")) or re.search(r"(?:是什么|是多久|是哪[天个]|是多少)[。！!\s]*$", text):
+        return None
     for field, pattern in _CHANGING_FIELDS.items():
         if pattern.search(text.strip(" \t-•")):
             return field
@@ -91,18 +94,29 @@ def render_constraints(current: dict) -> str:
     ], ensure_ascii=False) if current else ""
 
 
-def effective_content(message, current: dict) -> str:
-    if message.role != "user":
-        return message.content
+def effective_content(message, current: dict, *, keep_current: bool = True) -> str:
     removed = False
     kept = []
-    for sentence in sentences(message.content):
+    for part in _SENTENCES.split(message.content):
+        sentence = part.strip()
+        if not sentence:
+            continue
         field = constraint_field(sentence)
-        if field and current.get(field) != (str(message.id), sentence):
+        is_current = (keep_current and message.role == "user" and field
+                      and tuple(current.get(field, ())) == (str(message.id), sentence))
+        if (field or _HISTORICAL_PINNED.search(sentence)) and not is_current:
             removed = True
         else:
             kept.append(sentence)
     return "\n".join(kept) if removed else message.content
+
+
+def without_constraint_updates(text: str) -> str:
+    """Only the stored revision supplies active values, even when regenerating old turns."""
+    return "".join(
+        part for part in re.split(r"(?<=[。！？；])|(\n)", text)
+        if part and not constraint_field(part.strip())
+    ).strip()
 
 
 def turn_content(text: str, attachments: list[dict], budget: int) -> str:
@@ -192,14 +206,15 @@ def fit_agent_round(window: int, output_reserve: int, schemas: int, messages: li
 
 
 def summarize(messages, current: dict | None = None, *, question: str = "") -> str:
-    if current is None:
+    standalone = current is None
+    if standalone:
         current = {}
         for message in messages:
             update_constraints(current, message)
     candidates = []
     requested_skills = skills_in(question)
     for index, message in enumerate(messages):
-        parts = sentences(effective_content(message, current))
+        parts = sentences(effective_content(message, current, keep_current=standalone))
         relevant = [part for part in parts if IMPORTANT.search(part) or CONSTRAINT.search(part)]
         for position, part in enumerate(relevant or parts[:1]):
             rank = (bool(requested_skills & skills_in(part)), message.role == "user", bool(CONSTRAINT.search(part)),

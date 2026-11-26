@@ -48,6 +48,10 @@ celery_app.conf.update(
     },
     # Celery beat 定时
     beat_schedule={
+        "purge-expired-tool-results": {
+            "task": "app.tasks.beat.purge_expired_tool_results",
+            "schedule": crontab(minute="*/5"),
+        },
         "agent-task-heartbeat": {
             "task": "app.tasks.agent_task.heartbeat",
             "schedule": crontab(minute="*"),  # 每分钟扫定时任务表

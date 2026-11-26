@@ -235,11 +235,10 @@ export default function McpServers() {
       title: '执行权限',
       key: 'permission',
       render: (_: unknown, tool: McpToolMeta) => toolsDrawer && <Select
-        value={toolsDrawer.tool_permissions?.[tool.name] ?? 'none'}
+        value={toolsDrawer.tool_permissions?.[tool.name] ? 'confirm' : 'none'}
         disabled={busy === toolsDrawer.id}
         onChange={(policy: McpPermission | 'none') => void changePermission(toolsDrawer, tool.name, policy)}
-        options={[{ value: 'none', label: '禁止' }, { value: 'read', label: '信任为只读' },
-          { value: 'confirm', label: '每次确认' }]}
+        options={[{ value: 'none', label: '禁止' }, { value: 'confirm', label: '每次确认' }]}
       />,
     },
     {
@@ -282,7 +281,7 @@ export default function McpServers() {
       }
     >
       <Paragraph type="secondary" style={{ marginTop: -8 }}>
-        同步工具后，在工具清单中授权。只对你确认可信且只读的工具选择「信任为只读」，其余工具使用「每次确认」。
+        同步工具后，在工具清单中授权。每次调用都需要在待确认区域核对参数并确认。
       </Paragraph>
       <Drawer title="待确认工具操作" open={approvals !== null} onClose={() => setApprovals(null)} width={560}>
         <Button onClick={() => void loadApprovals()}>刷新</Button>

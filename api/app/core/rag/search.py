@@ -41,7 +41,7 @@ async def hybrid_search(
     source_type: str | None = None,
     min_vector_score: float | None = None,
     kb_ids: list[str] | None = None,
-    *, adaptive: bool = True, rerank: bool = True,
+    *, adaptive: bool = True, rerank: bool = True, query_vector: list[float] | None = None,
 ) -> list[dict]:
     """混合检索，返回 top_k 个结果（含 content / doc_name / source_id / score）。
 
@@ -51,8 +51,8 @@ async def hybrid_search(
     kb_ids 不为空时限定只检索这些知识库的内容（对话时取"已启用检索"的库集合）。
     传入空列表 [] 表示没有任何启用的库 → 直接返回空（不检索）。
 
-    min_vector_score 不为 None 时启用「绝对相关度门控」（精确导向，用于全局搜索）：
-    只保留 BM25 命中 或 向量原始余弦得分 ≥ 阈值的结果，丢弃不相关的最近邻噪声。
+    全局搜索传入 min_vector_score。分词后的短语命中按 BM25 排在前面，
+    其余向量结果须达到原始余弦阈值。显式传入空向量时只走短语召回。
     """
     if top_k <= 0 or recall_size <= 0 or kb_ids == []:
         return []
@@ -79,9 +79,9 @@ async def hybrid_search(
     if source_type:
         base_filter.append({"term": {"source_type": source_type}})
 
-    # 1. 向量召回
-    embed_client = await get_client_for_type(session, user_id, "embedding")
-    query_vector = await embed_client.embed_one(query)
+    if query_vector is None:
+        embed_client = await get_client_for_type(session, user_id, "embedding")
+        query_vector = await embed_client.embed_one(query)
     started = monotonic()
     size = max(recall_size, top_k)
     ceiling = max(size, min(_MAX_ADAPTIVE_RECALL, max(2 * size, 4 * top_k)))
@@ -121,42 +121,43 @@ def _distinct_candidates(hits, candidates) -> int:
 
 
 async def _rank_candidates(es, base_filter, query, query_vector, recall_size, min_vector_score):
-    knn = es.search(
-        index=CHUNKS_INDEX,
-        body={
+    async def vector_hits():
+        if not query_vector:
+            return {"hits": {"hits": []}}
+        return await es.search(index=CHUNKS_INDEX, body={
             "size": recall_size,
-            "query": {"bool": {"filter": base_filter}},
-            "knn": {
-                "field": "vector",
-                "query_vector": query_vector,
-                "k": recall_size,
-                "num_candidates": recall_size * 5,
-                "filter": {"bool": {"filter": base_filter}},
-            },
-        },
-    )
+            "knn": {"field": "vector", "query_vector": query_vector, "k": recall_size,
+                    "num_candidates": recall_size * 5, "filter": {"bool": {"filter": base_filter}}},
+        })
 
-    # 2. BM25 召回
-    if min_vector_score is not None:
-        rows = (await knn)["hits"]["hits"]
-        hits = {row["_id"]: row["_source"] for row in rows}
-        scores = {row["_id"]: 2 * row["_score"] - 1 for row in rows if 2 * row["_score"] - 1 >= min_vector_score}
-        return hits, sorted(scores, key=scores.get, reverse=True), scores, len(rows) >= recall_size
-
-    knn_resp, bm25_resp = await asyncio.gather(knn, es.search(
+    gated = min_vector_score is not None
+    knn_resp, bm25_resp = await asyncio.gather(vector_hits(), es.search(
         index=CHUNKS_INDEX,
         body={
             "size": recall_size,
             "query": {
                 "bool": {
-                    "must": [{"match": {"content": query}}],
+                    "must": [{"match_phrase" if gated else "match": {"content": query}}],
                     "filter": base_filter,
                 }
             },
         },
-    ))
+    ), return_exceptions=gated)
 
-    # 3. 收集 + 归一化 + 加权融合
+    if gated:
+        for lane, response in (("vector", knn_resp), ("phrase", bm25_resp)):
+            if isinstance(response, Exception):
+                logger.warning("Global search %s unavailable type=%s", lane, type(response).__name__)
+        vectors = [] if isinstance(knn_resp, Exception) else knn_resp["hits"]["hits"]
+        phrases = [] if isinstance(bm25_resp, Exception) else bm25_resp["hits"]["hits"]
+        hits = {row["_id"]: row["_source"] for row in [*vectors, *phrases]}
+        scores = {row["_id"]: row["_score"] / (1 + row["_score"]) for row in phrases}
+        for row in vectors:
+            cosine = 2 * row["_score"] - 1
+            if cosine >= min_vector_score:
+                scores.setdefault(row["_id"], cosine)
+        return hits, list(scores), scores, max(len(vectors), len(phrases)) >= recall_size
+
     hits: dict[str, dict] = {}
     vec_scores: dict[str, float] = {}
     bm_scores: dict[str, float] = {}

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 from langchain_core.messages import AIMessage
+from openai import APIError
 
 from app.core.llm.chat_model import build_default_chat_model
 from app.db.postgres import SessionLocal, close
@@ -30,6 +31,8 @@ def _scripted_model(plan: dict, repair: bool):
 
 async def run(model=None) -> dict:
     tasks = successes = satisfied = correct_calls = calls = recovered = recovery_cases = 0
+    failures = []
+    input_tokens = output_tokens = measured_calls = 0
     for index, (first, second) in enumerate(CASES):
         catalog = [{"id": key, "version": version, "topic": topic, "prompt": f"解释 {topic} 的原理"}
                    for key, version, topic in (("first", 2, first), ("second", 1, second))]
@@ -45,13 +48,17 @@ async def run(model=None) -> dict:
         try:
             await execute_training(run, model or _scripted_model(plan, repair=not resume), callbacks,
                                    "生成可执行的备考计划。", CareerTrace(run, callbacks), native_catalog=True)
-        except (InvalidCareerToolResponse, TimeoutError):
-            pass
+        except (InvalidCareerToolResponse, TimeoutError, APIError) as error:
+            failures.append({"case": index + 1, "reason": type(error).__name__, "resume": resume})
         for event in callbacks.record_event.await_args_list:
             data = event.args[0]
             if data["step"] == "create_training_plan":
                 calls += 1
                 correct_calls += data["outcome"] == "succeeded"
+                if data["inputTokens"] is not None and data["outputTokens"] is not None:
+                    measured_calls += 1
+                    input_tokens += data["inputTokens"]
+                    output_tokens += data["outputTokens"]
         if callbacks.plan.await_count != 1:
             continue
         result = callbacks.plan.await_args.args[0]
@@ -63,10 +70,16 @@ async def run(model=None) -> dict:
         success = valid and required_skills(run.context["job"]) <= covered
         successes += success
         recovered += resume and success and callbacks.questions.await_count == 0
+        if not success:
+            failures.append({"case": index + 1, "reason": "constraints" if not valid else "skill_coverage",
+                             "resume": resume})
     return {
         "mode": "live_model" if model else "scripted_model",
         "constraints": [satisfied, tasks], "task_success": [successes, tasks],
         "correct_tool_calls": [correct_calls, calls], "checkpoint_recovery": [recovered, recovery_cases],
+        "failure_cases": failures, "token_usage_calls": measured_calls,
+        "tokens": {"input": input_tokens, "output": output_tokens} if measured_calls else None,
+        "database_checkpoints": False,
     }
 
 

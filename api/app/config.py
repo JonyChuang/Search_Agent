@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     memory_shared_recall_cache_enabled: bool = False
     career_chat_context_window: int = 32768
     career_chat_reserved_output: int = 2048
+    chat_context_window: int = 32768
+    chat_reserved_output: int = 2048
     career_judge0_url: str = ""
     career_judge0_token: SecretStr = SecretStr("")
     career_judge0_python_id: int = 71

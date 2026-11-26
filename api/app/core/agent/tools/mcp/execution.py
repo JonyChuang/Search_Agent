@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from hashlib import sha256
 from time import time
 from uuid import UUID, uuid4
 
@@ -19,6 +20,14 @@ from app.repositories.mcp_server_repository import MCPServerRepository
 logger = logging.getLogger(__name__)
 _TTL = 300
 _MAX_PENDING = 20
+
+
+def schema_digest(schema: dict) -> str:
+    return sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
+
+
+def _reviewed_schema(server, name: str) -> str | None:
+    return next((item.get("schemaDigest") for item in (server.tools_cache or []) if item["name"] == name), None)
 
 
 def _queue(user_id: UUID) -> str:
@@ -42,7 +51,7 @@ def _preview(value):
 async def _request_approval(user_id, server, tool: str, arguments: dict) -> UUID:
     return await _enqueue(user_id, {
         "server": str(server.id), "name": server.name, "revision": str(server.updated_at),
-        "tool": tool, "arguments": arguments,
+        "tool": tool, "arguments": arguments, "schemaDigest": _reviewed_schema(server, tool),
     })
 
 
@@ -92,22 +101,44 @@ async def pending_approvals(user_id: UUID) -> list[dict]:
 
 class ToolExecutionGuard:
     @staticmethod
-    async def invoke_mcp(user_id: UUID, server_id: UUID, tool: str, arguments: dict, *, approved_revision=None):
+    async def _authorized_server(user_id: UUID, server_id: UUID, tool: str, revision=None, expected_schema=None):
         async with SessionLocal() as session:
             server = await MCPServerRepository(session).get(user_id, server_id)
             mode = (server.tool_permissions or {}).get(tool) if server and server.enabled else None
-            if mode not in {"read", "confirm"} or (approved_revision is not None and
-                    (mode != "confirm" or approved_revision != str(server.updated_at))):
+            reviewed = _reviewed_schema(server, tool) if mode in {"read", "confirm"} else None
+            if (not reviewed or (expected_schema is not None and expected_schema != reviewed)
+                    or (revision is not None and (revision != str(server.updated_at) or expected_schema != reviewed))):
                 logger.info("tool authorization denied owner=%s server=%s tool=%s", user_id, server_id, tool)
                 raise BizError("MCP 工具未授权或权限已变更", code=403, status_code=403)
-            if mode == "confirm" and approved_revision is None:
-                approval = await _request_approval(user_id, server, tool, arguments)
-                return f"工具尚未执行。请在工具配置的 MCP 待确认区域查看并审批请求 {approval}。"
-            connection = build_connection(server)
+            return server
+
+    @classmethod
+    async def invoke_mcp(cls, user_id: UUID, server_id: UUID, tool: str, arguments: dict, *,
+                         approved_revision=None, expected_schema=None):
+        server = await cls._authorized_server(user_id, server_id, tool, approved_revision, expected_schema)
+        # Every external server is untrusted for side effects, including existing `read` grants.
+        if approved_revision is None:
+            approval = await _request_approval(user_id, server, tool, arguments)
+            return f"工具尚未执行。请在工具配置的 MCP 待确认区域查看并审批请求 {approval}。"
         try:
+            connection = build_connection(server)
             async with asyncio.timeout(45):
                 async with MultiServerMCPClient({"tool": connection}).session("tool") as remote:
+                    cursor = None
+                    for _ in range(32):
+                        page = await remote.list_tools(cursor=cursor)
+                        matching = next((item for item in page.tools if item.name == tool), None)
+                        if matching is not None:
+                            break
+                        cursor = page.nextCursor
+                        if not cursor:
+                            break
+                    if matching is None or schema_digest(matching.inputSchema) != expected_schema:
+                        raise BizError("远程工具定义已变更，请重新同步后发起审批", code=409, status_code=409)
+                    await cls._authorized_server(user_id, server_id, tool, approved_revision, expected_schema)
                     result = await remote.call_tool(tool, arguments)
+        except BizError:
+            raise
         except Exception as error:
             logger.warning("MCP call failed owner=%s server=%s tool=%s type=%s", user_id, server_id, tool,
                            type(error).__name__)
@@ -144,4 +175,4 @@ async def decide_approval(user_id: UUID, request_id: UUID, approve: bool):
             logger.info("Scheduled task approved owner=%s request=%s", user_id, request_id)
             return {"id": str(task.id)}
     return await ToolExecutionGuard.invoke_mcp(user_id, UUID(row["server"]), row["tool"], row["arguments"],
-                                              approved_revision=row["revision"])
+                                              approved_revision=row["revision"], expected_schema=row.get("schemaDigest"))

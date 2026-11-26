@@ -24,34 +24,23 @@ class SearchService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def _search_documents(self, user_id: uuid.UUID, query: str, top_k: int):
+    async def _search_content(self, user_id: uuid.UUID, query: str, top_k: int, source_type: str, vector):
         try:
             return await hybrid_search(
-                self.session, user_id, query, top_k=top_k, source_type="document",
-                min_vector_score=settings.global_search_min_vector_score,
+                self.session, user_id, query, top_k=top_k, source_type=source_type,
+                min_vector_score=settings.global_search_min_vector_score, query_vector=vector,
             )
         except Exception as e:
-            logger.warning("全局搜索-文档失败: %s", e)
+            logger.warning("Global search source=%s failed type=%s", source_type, type(e).__name__)
             return []
 
-    async def _search_images(self, user_id: uuid.UUID, query: str, top_k: int):
-        try:
-            return await hybrid_search(
-                self.session, user_id, query, top_k=top_k, source_type="image",
-                min_vector_score=settings.global_search_min_vector_score,
-            )
-        except Exception as e:
-            logger.warning("全局搜索-图片失败: %s", e)
+    async def _search_memory(self, user_id: uuid.UUID, query: str, top_k: int, embed_client, vector):
+        if not vector:
             return []
-
-    async def _search_memory(self, user_id: uuid.UUID, query: str, top_k: int):
         try:
-            embed_client = await get_client_for_type(
-                self.session, user_id, "embedding"
-            )
             return await search_memory(
                 embed_client=embed_client, user_id=user_id, query=query, top_k=top_k,
-                min_vector_score=settings.memory_search_min_vector_score,
+                min_vector_score=settings.memory_search_min_vector_score, query_vector=vector,
             )
         except Exception as e:
             logger.warning("全局搜索-记忆失败: %s", e)
@@ -64,9 +53,15 @@ class SearchService:
         query = (query or "").strip()
         if not query:
             return {"documents": [], "images": [], "memories": []}
+        embed_client, vector = None, []
+        try:
+            embed_client = await get_client_for_type(self.session, user_id, "embedding")
+            vector = await embed_client.embed_one(query) or []
+        except Exception as error:
+            logger.warning("Global search embedding unavailable type=%s", type(error).__name__)
         documents, images, memories = await asyncio.gather(
-            self._search_documents(user_id, query, top_k),
-            self._search_images(user_id, query, top_k),
-            self._search_memory(user_id, query, top_k),
+            self._search_content(user_id, query, top_k, "document", vector),
+            self._search_content(user_id, query, top_k, "image", vector),
+            self._search_memory(user_id, query, top_k, embed_client, vector),
         )
         return {"documents": documents, "images": images, "memories": memories}

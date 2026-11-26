@@ -1,6 +1,6 @@
 """Persisted Agent execution context and tool observations."""
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Table, Text, Uuid, func
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Table, Text, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db.postgres import Base
@@ -24,4 +24,14 @@ agent_tool_results = Table(
     Column("tool", String(64), nullable=False),
     Column("ciphertext", Text, nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False, index=True),
+    Index("ix_agent_tool_results_user_expires", "user_id", "expires_at"),
+)
+
+career_queue_samples = Table(
+    "career_queue_samples", Base.metadata,
+    Column("sampled_at", DateTime(timezone=True), primary_key=True),
+    Column("queued", Integer, nullable=False),
+    Column("expired_leases", Integer, nullable=False),
+    Column("oldest_wait_seconds", Integer, nullable=False),
+    Column("alert", Boolean, nullable=False),
 )

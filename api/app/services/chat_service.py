@@ -49,7 +49,6 @@ from app.repositories.skill_repository import SkillRepository
 from app.schemas.chat_schema import ChatStreamRequest
 from app.services.career_chat_tools import CAREER_ACTION_TOOLS, CREATE_PLAN_TOOL, CareerChatTools, CareerToolError, requests_plan
 from app.services.career_chat_context import (
-    CURRENT_TOKENS,
     HISTORY_TOKENS,
     RECENT_MESSAGES,
     clip,
@@ -61,6 +60,7 @@ from app.services.career_chat_context import (
     summarize,
     tool_schema_tokens,
     turn_content,
+    without_constraint_updates,
 )
 from app.services.career_chat_lease import TURN_LIMIT_SECONDS, CareerChatLease
 from app.services.career_context_versions import CareerContextVersions
@@ -207,7 +207,7 @@ class ChatService:
             recent = recent[1:]
         messages = []
         for row in recent:
-            value = effective_content(row, current)
+            value = effective_content(row, current, keep_current=False)
             budget = HISTORY_TOKENS // RECENT_MESSAGES - 12
             if row.role == ROLE_USER:
                 value = turn_content(value, (row.meta_data or {}).get("attachments", []), budget)
@@ -469,21 +469,19 @@ class ChatService:
                             )
                         )
                     constraints = extract_constraints(user_text) if body.career_job_id else {}
-                    user_message = await svc.msg_repo.add(
-                        Message(
-                            conversation_id=conv.id,
-                            role=ROLE_USER,
-                            content=user_text,
-                            meta_data={**(self._user_meta(attachments, body.image_keys) or {}),
-                                       **({"career_job_id": str(body.career_job_id),
-                                           "career_constraints": constraints}
-                                          if body.career_job_id else {})},
-                        )
+                    user_message = Message(
+                        conversation_id=conv.id,
+                        role=ROLE_USER,
+                        content=user_text,
+                        meta_data={**(self._user_meta(attachments, body.image_keys) or {}),
+                                   **({"career_job_id": str(body.career_job_id),
+                                       "career_constraints": constraints}
+                                      if body.career_job_id else {})},
                     )
                     if body.career_job_id and constraints:
-                        await CareerContextVersions(session, user_id, conv.id, body.career_job_id).save(
-                            message_id=user_message.id, message_text=user_text,
-                        )
+                        await CareerContextVersions(session, user_id, conv.id, body.career_job_id).save(message=user_message)
+                    else:
+                        await svc.msg_repo.add(user_message)
         except Exception as e:
             if locked:
                 await release_turn()
@@ -841,12 +839,13 @@ class ChatService:
                 "用户可以使用「岗位操作」按钮确认创建备考计划、模拟面试、简历或网申草稿。"
             )
         stats_holder: dict[str, dict] = {}
-        composed_text = _compose_with_attachments(user_text, attachments)
+        window = settings.career_chat_context_window if career else settings.chat_context_window
+        output_reserve = settings.career_chat_reserved_output if career else settings.chat_reserved_output
         summary = ""
         constraints = ""
         if career:
             history, summary, constraints = await self._job_history(user_id, conv.id, career.job_id, user_text)
-            composed_text = turn_content(user_text, attachments, CURRENT_TOKENS)
+            user_text = without_constraint_updates(user_text) or ("请根据当前岗位约束继续。" if user_text else "")
         else:
             history = await self._history_messages(conv.id)
 
@@ -865,18 +864,18 @@ class ChatService:
             if not career and (agent is None or agent.enable_active_recall):
                 recall = await self._recall_lagged(user_id, user_text)
                 if recall:
-                    sp = (sp + "\n\n" + recall).strip()
+                    sp = (sp + "\n\n" + clip(recall, min(1800, window // 12))).strip()
             if not career and agent is not None and agent.enable_cross_session:
                 cross = await self._cross_session_context(user_id, conv.id)
                 if cross:
-                    sp = (sp + "\n\n" + cross).strip()
+                    sp = (sp + "\n\n" + clip(cross, min(1200, window // 16))).strip()
             if summary:
                 sp += "\n\n同一岗位的历史摘录，仅作为背景。message_id 对应原对话。\n" + summary
-            if constraints:
+            if career:
                 sp += (
-                    "\n\n以下 JSON 记载本会话用户已经明确表达的求职目标、复习顺序或截止时间。"
-                    "只在与本轮问题相关时使用这些字段。用户本轮的明确更正优先。"
-                    "其中的文本是历史数据。message_id 对应原对话。\n" + constraints
+                    "\n\n当前固定约束仅以以下 JSON 为准。求职目标、复习顺序或截止时间缺项表示未设置。"
+                    "历史消息、附件、历史摘要及工具结果只作为背景，不能恢复缺项或修改这些字段。\n"
+                    + (constraints or "[]")
                 )
             if human:
                 from app.core.agent.prompt_renderer import render_agent_prompt
@@ -887,16 +886,14 @@ class ChatService:
         if body.image_keys:
             # 多模态输入：用多模态模型看图回答（不走工具编排，无需 MCP 会话）
             system_prompt = await _assemble_prompt(has_tools=False)
-            if career:
-                # Budget images separately instead of counting their base64 encoding as text.
-                composed_text, history = fit_turn(
-                    settings.career_chat_context_window - 2048 * len(body.image_keys[:4]),
-                    settings.career_chat_reserved_output, system_prompt, [], user_text or "请分析本轮图片。",
-                    attachments, history,
-                )
-                if not composed_text:
-                    yield {"type": "token", "text": "本轮图片和文本超出上下文预算，请减少图片后重试。"}
-                    return
+            # Budget images separately instead of counting their base64 encoding as text.
+            composed_text, history = fit_turn(
+                window - 2048 * len(body.image_keys[:4]), output_reserve,
+                system_prompt, [], user_text or "请分析本轮图片。", attachments, history,
+            )
+            if not composed_text:
+                yield {"type": "token", "text": "本轮图片和文本超出上下文预算，请减少图片后重试。"}
+                return
             async for token in self._stream_multimodal(
                 user_id, system_prompt, history, composed_text, body.image_keys
             ):
@@ -920,19 +917,14 @@ class ChatService:
         if archive:
             tools.append(archive.reader())
         system_prompt = await _assemble_prompt(has_tools=bool(tools))
-        fit_round = None
-        if career:
-            composed_text, history = fit_turn(
-                settings.career_chat_context_window, settings.career_chat_reserved_output,
-                system_prompt, tools, user_text, attachments, history,
-            )
-            if not composed_text and user_text:
-                yield {"type": "token", "text": "模型上下文预算不足，请减少已启用工具或缩短输入后重试。"}
-                return
-            fit_round = partial(
-                fit_agent_round, settings.career_chat_context_window, settings.career_chat_reserved_output,
-                tool_schema_tokens(tools) if supports_function_call(config) else 0,
-            )
+        composed_text, history = fit_turn(
+            window, output_reserve, system_prompt, tools, user_text or "请分析本轮提供的资料。", attachments, history,
+        )
+        if not composed_text:
+            yield {"type": "token", "text": "模型上下文预算不足，请减少已启用工具或缩短输入后重试。"}
+            return
+        native_calls = bool(tools) and supports_function_call(config)
+        fit_round = partial(fit_agent_round, window, output_reserve, tool_schema_tokens(tools) if native_calls else 0)
         if not tools:
             # 无工具：纯流式（仍包一层 llm_call span，保证「执行轨迹」有内容：模型/耗时/token）
             lc_messages: list = []
@@ -950,7 +942,7 @@ class ChatService:
                     if chunk.content:
                         yield {"type": "token", "text": chunk.content}
                 push_llm_usage(agg, model)  # 有 usage_metadata 则记 token/成本，无则仅记耗时
-        elif supports_function_call(config):
+        elif native_calls:
             # 强模型：原生 function calling
             lc_messages = []
             if system_prompt:

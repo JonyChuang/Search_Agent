@@ -10,12 +10,10 @@
 故对 server 名与 MCP 原始工具名统一清洗（非法字符替换为 _），并去重。
 """
 import asyncio
-import json
 import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from hashlib import sha256
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -24,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.agent.tools.mcp.connection import CONNECT_TIMEOUT, build_connection
-from app.core.agent.tools.mcp.execution import ToolExecutionGuard
+from app.core.agent.tools.mcp.execution import ToolExecutionGuard, schema_digest
 from app.core.agent.tools.mcp.tool_cache import load_descriptors
 from app.core.logging import get_logger
 from app.models.mcp_server_model import MCPServer
@@ -61,7 +59,7 @@ def _sanitize(text: str) -> str:
 
 def _schema_digest(tool: BaseTool) -> str:
     schema = tool.args_schema if isinstance(tool.args_schema, dict) else tool.get_input_schema().model_json_schema()
-    return sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()
+    return schema_digest(schema)
 
 
 async def _load_raw_tools(server: MCPServer) -> list[BaseTool]:
@@ -127,9 +125,10 @@ def _collect_renamed(
         reviewed = {tool["name"]: tool.get("schemaDigest") for tool in (server.tools_cache or [])}
         for t in raw:
             original = t.name
-            if original not in (server.tool_permissions or {}) or reviewed.get(original) != _schema_digest(t):
+            digest = _schema_digest(t)
+            if original not in (server.tool_permissions or {}) or reviewed.get(original) != digest:
                 continue
-            guarded = t.model_copy(update={"coroutine": _guarded_call(server.user_id, server.id, original),
+            guarded = t.model_copy(update={"coroutine": _guarded_call(server.user_id, server.id, original, digest),
                                            "response_format": "content",
                                            "metadata": {**(t.metadata or {}), "mcp_guarded": True}})
             _rename(guarded, prefix, seen)
@@ -137,9 +136,9 @@ def _collect_renamed(
     return tools
 
 
-def _guarded_call(user_id: uuid.UUID, server_id: uuid.UUID, tool_name: str):
+def _guarded_call(user_id: uuid.UUID, server_id: uuid.UUID, tool_name: str, digest: str):
     async def invoke(**arguments):
-        return await ToolExecutionGuard.invoke_mcp(user_id, server_id, tool_name, arguments)
+        return await ToolExecutionGuard.invoke_mcp(user_id, server_id, tool_name, arguments, expected_schema=digest)
     return invoke
 
 

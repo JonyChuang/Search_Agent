@@ -5,7 +5,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_HTTP_TIMEOUT=300
+    UV_HTTP_TIMEOUT=300 \
+    TIKTOKEN_CACHE_DIR=/app/.tiktoken-cache
 
 WORKDIR /app
 
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 先装依赖（利用缓存层）
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --no-install-project --no-dev
+RUN /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
 COPY . .
 

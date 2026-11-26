@@ -14,6 +14,7 @@ from sqlalchemy import text
 from app.core.agent.tracing import get_tracer
 from app.core.exceptions import BizError
 from app.db.career import career_transaction
+from app.db.postgres import SessionLocal
 from app.services.career_context import CareerContextTooLarge, CareerSourceUnavailable, encode
 from app.services.career_interviews import CareerInterviews, apply_evaluation
 from app.services.career_queue import PUBLIC_KINDS, CareerQueue, conflict
@@ -30,6 +31,7 @@ from app.services.career_training import CareerTraining
 from app.services.career_training_harness import explain_learning
 
 logger = logging.getLogger(__name__)
+_LEASE_HEARTBEAT_SECONDS = 20
 
 
 class NativeCareerCheckpoints:
@@ -243,7 +245,7 @@ async def poll_career_queue() -> None:
 async def supervise(row: dict) -> None:
     async def maintain_lease():
         while True:
-            await asyncio.sleep(20)
+            await asyncio.sleep(_LEASE_HEARTBEAT_SECONDS)
             async with career_transaction() as connection:
                 if not await CareerQueue(connection).renew(row):
                     return
@@ -284,11 +286,32 @@ async def monitor_queue() -> None:
                     FROM career_task WHERE status IN ('RUNNING', 'QUEUED')
                 """))
                 queued, expired, oldest = rows.one()
-            log = logger.warning if expired or oldest > 300 else logger.info
-            log("Career queue queued=%s expired_leases=%s oldest_wait_seconds=%s", queued, expired, max(0, oldest))
+            await record_queue_sample(queued, expired, max(0, oldest))
         except Exception as error:
             logger.warning("Career queue monitoring unavailable type=%s", type(error).__name__)
         await asyncio.sleep(60)
+
+
+async def record_queue_sample(queued: int, expired: int, oldest: int) -> None:
+    alert = expired > 0 or oldest > 300
+    log = logger.warning if alert else logger.info
+    log("Career queue queued=%s expired_leases=%s oldest_wait_seconds=%s", queued, expired, oldest)
+    async with SessionLocal.begin() as session:
+        previous = (await session.execute(text("""
+            WITH inserted AS (
+                INSERT INTO career_queue_samples(sampled_at, queued, expired_leases, oldest_wait_seconds, alert)
+                VALUES (date_trunc('minute', now()), :queued, :expired, :oldest, :alert)
+                ON CONFLICT (sampled_at) DO NOTHING RETURNING sampled_at
+            )
+            SELECT COALESCE((
+                SELECT alert FROM career_queue_samples WHERE sampled_at < inserted.sampled_at
+                ORDER BY sampled_at DESC LIMIT 1
+            ), false) FROM inserted
+        """), {"queued": queued, "expired": expired, "oldest": oldest, "alert": alert})).scalar_one_or_none()
+    if previous is not None and previous != alert:
+        level = logger.warning if alert else logger.info
+        level("Career queue alert transition=%s backlog=%s expired_leases=%s",
+              "raised" if alert else "cleared", queued, expired)
 
 
 def start_workers() -> list[asyncio.Task]:

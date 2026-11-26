@@ -112,13 +112,42 @@ def score(rows, method):
         "queries_with_all_sources": sum(len(hits) == len(gold) for hits, (_, gold) in zip(covered, rankings, strict=True)),
         "queries": len(rows),
     }
-    if method in {"fixed", "hybrid", "reranked"}:
+    if method in {"fixed", "hybrid", "global", "reranked"}:
         timings = sorted(row["retrieval_ms"][method] for row in rows)
         result["p95_retrieval_ms"] = timings[max(0, ceil(len(timings) * 0.95) - 1)] if timings else None
         result["mean_distinct_parent_results"] = metrics.avg([row["distinct_parents"][method] for row in rows])
         result["parent_slots_filled"] = sum(row["distinct_parents"][method] for row in rows)
         result["expanded_queries"] = sum(row["vector_requests"][method] > 1 for row in rows)
     return result
+
+
+async def check_global_lanes(es, index, dimensions):
+    """Prove phrase fallback and cosine filtering with controlled vectors on real ES."""
+    owner, foreign = uuid4(), uuid4()
+    near = [1.0, 0.0] + [0.0] * (dimensions - 2)
+    far = [0.0, 1.0] + [0.0] * (dimensions - 2)
+    fixtures = (
+        ("phrase", owner, "java volatile", far),
+        ("semantic", owner, "memory visibility", near),
+        ("weak", owner, "unrelated", far),
+        ("foreign", foreign, "java volatile", near),
+    )
+    actions = []
+    for name, user, content, vector in fixtures:
+        row = build_chunk_doc(
+            user_id=str(user), source_id=name, source_type="document", chunk_type=CHUNK_TYPE_CHILD,
+            doc_name=name, content=content, vector=vector, kb_id="global-regression",
+        )
+        actions.append({**row, "_index": index, "_id": name})
+    await helpers.async_bulk(es, actions, refresh="wait_for")
+    with patch.object(search, "get_es", return_value=es), patch.object(search, "CHUNKS_INDEX", index):
+        options = {"source_type": "document", "min_vector_score": 0.45, "kb_ids": ["global-regression"]}
+        full = await search.hybrid_search(None, owner, "java volatile", query_vector=near, **options)
+        lexical = await search.hybrid_search(None, owner, "java volatile", query_vector=[], **options)
+    assert [hit["source_id"] for hit in full] == ["phrase", "semantic"], full
+    assert [hit["source_id"] for hit in lexical] == ["phrase"], lexical
+    return {"phrase_survives_low_cosine": True, "weak_neighbor_excluded": True, "tenant_filter_preserved": True,
+            "lexical_without_embedding": True}
 
 
 async def evaluate(url, model_dir, dataset, reranker=None):
@@ -166,7 +195,7 @@ async def evaluate(url, model_dir, dataset, reranker=None):
                     elapsed = {}
                     vector_requests = {}
                     fixed_candidates = {}
-                    variants = [("fixed", False, False), ("hybrid", True, False)]
+                    variants = [("fixed", False, False), ("hybrid", True, False), ("global", True, False)]
                     if index_in_eval % 2:
                         variants.reverse()
                     if reranker:
@@ -177,7 +206,8 @@ async def evaluate(url, model_dir, dataset, reranker=None):
                         started = perf_counter()
                         ran[name] = await search.hybrid_search(None, uid, fixture["query"], top_k=TOP_K,
                                                                source_type="document", kb_ids=[kb_id],
-                                                               adaptive=adaptive, rerank=use_reranker)
+                                                               adaptive=adaptive, rerank=use_reranker,
+                                                               min_vector_score=0.45 if name == "global" else None)
                         elapsed[name] = round((perf_counter() - started) * 1000, 2)
                         vector_requests[name] = recorder.vector_requests
                         if name == "fixed":
@@ -190,12 +220,14 @@ async def evaluate(url, model_dir, dataset, reranker=None):
                                  }, "retrieval_ms": elapsed, "vector_requests": vector_requests,
                                  "distinct_parents": {name: len({hit["parent_id"] for hit in values if hit["parent_id"]})
                                                       for name, values in ran.items()}})
+            global_lanes = await check_global_lanes(es, index, len(vectors[0]))
         finally:
             await es.indices.delete(index=index)
-    methods = ("bm25", "vector", "fixed", "hybrid") + (("reranked",) if reranker else ())
+    methods = ("bm25", "vector", "fixed", "hybrid", "global") + (("reranked",) if reranker else ())
     kinds = sorted({row["kind"] for row in rows})
     return {"elasticsearch": version, "embedding": MODEL, "dimensions": len(vectors[0]),
             "documents": len(documents), "child_chunks": len(children), "queries": len(queries),
+            "global_lanes": global_lanes,
             "successful_rerank_queries": rerank_ok,
             "summary": {method: score(rows, method) for method in methods},
             "by_kind": {kind: {method: score([row for row in rows if row["kind"] == kind], method)

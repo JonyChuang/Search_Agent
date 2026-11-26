@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.exceptions import BizError
+from app.models.conversation_model import Message
 from app.repositories.conversation_repository import ConversationRepository, MessageRepository
 from app.services.career_chat_context import extract_constraints, latest_constraints
 
@@ -39,7 +40,7 @@ class CareerContextVersions:
         history = MessageRepository(self.session).job_user_history(self.keys["conversation"], self.user_id, self.keys["job"])
         return {"version": 0, "state": await latest_constraints(history), "source": "history"}
 
-    async def save(self, *, message_id=None, message_text=None, edits=None, expected=None, rollback=None) -> dict:
+    async def save(self, *, message: Message | None = None, edits=None, expected=None, rollback=None) -> dict:
         # Serialize chat edits and explicit user edits for the same conversation/job.
         await self.session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
                                    {"scope": f"career-context:{self.keys['conversation']}:{self.keys['job']}"})
@@ -51,8 +52,12 @@ class CareerContextVersions:
         if rollback is not None:
             state = (await self.read(rollback))["state"]
             source = f"rollback:{rollback}"
-        elif message_id is not None:
-            state.update({field: [str(message_id), value] for field, value in extract_constraints(message_text).items()})
+        elif message is not None:
+            if message.conversation_id != self.keys["conversation"] or message.role != "user":
+                raise BizError("约束来源不属于本次用户对话", code=400, status_code=400)
+            self.session.add(message)
+            await self.session.flush()
+            state.update({field: [str(message.id), value] for field, value in extract_constraints(message.content).items()})
             source = "message"
         else:
             for field, value in edits.items():

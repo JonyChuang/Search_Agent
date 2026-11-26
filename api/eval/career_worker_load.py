@@ -63,9 +63,34 @@ async def run() -> dict:
             retry = await queue.owned(recovered["user_id"], recovered["id"])
             assert retry["status"] == "QUEUED" and retry["lease_token"] is None
             assert await queue._automatic_retries(recovered["id"]) == 2
+            active_after_retry = await queue.claim(("TRAINING",))
+            assert active_after_retry is None or active_after_retry["id"] != recovered["id"]
+            if active_after_retry:
+                await queue.finish(active_after_retry, None, "fixture")
+            await queue._run(
+                "UPDATE career_task SET queued_at = TIMESTAMPADD(SECOND, -1, CURRENT_TIMESTAMP(6)) WHERE id = :id",
+                id=recovered["id"],
+            )
+        next_attempt = await claim()
+        assert next_attempt and next_attempt["id"] == recovered["id"]
+        assert next_attempt["agent_context_json"] == {"payload": "existing"}
+        async with career_transaction() as db:
+            queue = IsolatedQueue(db)
+            draft = {"analysis": "saved draft", "questions": [], "steps": []}
+            await queue.checkpoint(next_attempt, "training_catalog_json", [{"id": "fixture", "version": 1}])
+            await queue.checkpoint(next_attempt, "training_draft_json", draft)
+            await queue._run("UPDATE career_task SET lease_until = CURRENT_TIMESTAMP(6) WHERE id = :id",
+                             id=next_attempt["id"])
+        with_draft = await claim()
+        assert with_draft and with_draft["id"] == next_attempt["id"] and with_draft["training_draft_json"] == draft
+        async with career_transaction() as db:
+            queue = IsolatedQueue(db)
+            assert not await queue.finish(next_attempt, None, "stale")
+            assert await queue.finish(with_draft, draft, None)
+            assert (await queue.owned(with_draft["user_id"], with_draft["id"]))["status"] == "SUCCEEDED"
         return {"submissions": len(submitted), "unique_tasks": 8, "parallel_claimers": 12,
                 "successful_initial_claims": 4, "checkpoint_reused": True, "stale_write_rejected": True,
-                "transient_retry_recorded": True}
+                "transient_retry_recorded": True, "retry_backoff_respected": True, "draft_reused_after_expiry": True}
     finally:
         async with career_transaction() as db:
             for table in reversed(created):
