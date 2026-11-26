@@ -51,6 +51,12 @@ def _render_research_prompt(
     )
 
 
+def _render_prompt(topic: str, rubric: RubricDef, artifact: dict[str, Any]) -> str:
+    if rubric.name == "career_training":
+        return render_verifier_prompt("verify_training.jinja2", topic=topic, rubric=rubric, artifact=artifact)
+    return _render_research_prompt(topic=topic, rubric=rubric, artifact=artifact)
+
+
 def _parse_verify_response(text: str, rubric: RubricDef) -> VerifyScore:
     """健壮解析 verifier 返回的 JSON,缺字段给默认值。"""
     data = parse_json_object(text) or {}
@@ -102,7 +108,7 @@ class SameModelVerifier(Verifier):
         self, *, topic: str, artifact: dict[str, Any], rubric: RubricDef
     ) -> VerifyScore:
         system = _critic_role()
-        user = _render_research_prompt(topic=topic, rubric=rubric, artifact=artifact)
+        user = _render_prompt(topic, rubric, artifact)
         text = await _invoke_critic(self.model, system, user)
         return _parse_verify_response(text, rubric)
 
@@ -125,7 +131,7 @@ class CrossModelVerifier(Verifier):
         self, *, topic: str, artifact: dict[str, Any], rubric: RubricDef
     ) -> VerifyScore:
         system = _critic_role()
-        user = _render_research_prompt(topic=topic, rubric=rubric, artifact=artifact)
+        user = _render_prompt(topic, rubric, artifact)
         text = await _invoke_critic(self.model, system, user)
         return _parse_verify_response(text, rubric)
 

@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
-from openai import APIConnectionError, RateLimitError
+from openai import APIConnectionError, APIStatusError, RateLimitError
 from sqlalchemy import text
 
 from app.config import settings
@@ -30,7 +30,10 @@ from app.services.career_task_service import (
     execute,
 )
 from app.services.career_training import CareerTraining
+from app.services.career_training_contract import TrainingContract, TrainingContractError
 from app.services.career_training_harness import explain_learning
+from app.services.career_training_runtime import TrainingExecution, TrainingProgress
+from app.services.career_training_verifier import TrainingPlan, verify_plan
 
 logger = logging.getLogger(__name__)
 _LEASE_HEARTBEAT_SECONDS = 20
@@ -46,7 +49,7 @@ class NativeCareerCheckpoints:
             active = await queue.active(self.row)
             raw = active["context_json"]
             preferences = raw.get("preferences") or {}
-            if "revision" in preferences:
+            if "revision" in preferences and "trainingContract" not in raw:
                 records = CareerRecords(connection, active["user_id"])
                 await records.jobs().get(active["job_id"], lock=True)
                 current = await records.job_notes(active["job_id"])
@@ -81,6 +84,16 @@ class NativeCareerCheckpoints:
             saved = active["training_catalog_json"]
             if saved is None:
                 raise conflict("请先完成查题")
+            raw = active["context_json"]
+            if "trainingContract" in raw:
+                contract = TrainingContract.model_validate(raw["trainingContract"])
+                candidate = TrainingPlan.model_validate({key: value for key, value in plan.items() if key != "steps"})
+                evidence = {item["id"] for item in raw.get("experiences", [])}
+                if not verify_plan(candidate, contract, saved, evidence).passed:
+                    raise TrainingContractError("训练计划未通过保存校验。", "FINAL_VERIFICATION_FAILED")
+                plan = candidate.draft()
+                by_id = {ref["id"]: ref for ref in plan["questions"]}
+                plan["questions"] = [by_id[identifier] for step in candidate.schedule for identifier in step.questionRefs]
             allowed = {(q["id"], q["version"]): q for q in saved}
             ids = set()
             selected = []
@@ -103,6 +116,10 @@ class NativeCareerCheckpoints:
         async with career_transaction() as connection:
             await CareerQueue(connection).record_event(self.row, value)
 
+    async def training_runtime(self, value: dict) -> None:
+        async with career_transaction() as connection:
+            await CareerQueue(connection).training_runtime(self.row, value)
+
 
 def _search_source_is_public(url: str) -> bool:
     try:
@@ -113,6 +130,8 @@ def _search_source_is_public(url: str) -> bool:
 
 
 def _display_error(error: Exception) -> str:
+    if isinstance(error, TrainingContractError):
+        return str(error)
     if isinstance(error, MissingCareerTools) or isinstance(error, BizError) and error.code == 2010:
         return "请在模型配置中设置支持工具调用的默认对话模型，然后重试"
     if isinstance(error, MissingCareerSearch):
@@ -132,9 +151,12 @@ def _display_error(error: Exception) -> str:
 
 async def run_claimed(row: dict) -> None:
     checkpoint = next((stage for column, stage in (
-        ("training_draft_json", "resume_draft"), ("training_catalog_json", "resume_catalog"),
+        ("training_draft_json", "resume_draft"), ("training_runtime_json", "resume_training"),
+        ("training_catalog_json", "resume_catalog"),
         ("agent_context_json", "resume_context"),
-    ) if row[column] is not None), None)
+    ) if row.get(column) is not None), None)
+    if checkpoint == "resume_catalog" and row["generation"] == 1 and row["context_json"].get("trainingContract"):
+        checkpoint = None
     async with get_tracer().trace(
         user_id=UUID(row["user_id"]), task_type="career_task", task_id=UUID(row["id"]), task_name=row["kind"],
         attributes={"career.generation": row["generation"], "career.resume_from": checkpoint or "start"},
@@ -155,13 +177,18 @@ async def run_claimed(row: dict) -> None:
 
 async def _run_claimed(row: dict) -> str:
     result, error = row["training_draft_json"], None
+    failure = None
     transient = False
     if result is None:
         try:
+            if snapshot := row["context_json"].get("trainingContract"):
+                if (snapshot["userId"], snapshot["jobId"]) != (row["user_id"], row["job_id"]):
+                    raise TrainingContractError("任务契约与岗位范围不一致。", "CONTRACT_SCOPE_MISMATCH")
             run = CareerRun(
                 id=row["id"], lease=row["lease_token"], userId=row["user_id"], kind=row["kind"],
                 context=row["context_json"], trainingCatalog=row["training_catalog_json"],
                 agentContext=row["agent_context_json"], practiceLearning=row["context_json"].get("practiceLearning"),
+                trainingRuntime=row.get("training_runtime_json"),
             )
             result = await execute(run, NativeCareerCheckpoints(row))
             if run.kind == "PREPARATION" and run.context.get("purpose") == "NOTES":
@@ -178,6 +205,11 @@ async def _run_claimed(row: dict) -> str:
                            row["id"], row["generation"], type(exception).__name__)
             result, error = None, _display_error(exception)
             transient = isinstance(exception, (TimeoutError, APIConnectionError, RateLimitError))
+            if row["context_json"].get("trainingContract") and isinstance(exception, APIStatusError):
+                transient = transient or exception.status_code >= 500
+            failure = (exception.code if isinstance(exception, TrainingContractError) else
+                       "CONTEXT_BUDGET_EXCEEDED" if isinstance(exception, CareerContextTooLarge) else
+                       "TRANSIENT_MODEL_ERROR" if transient else type(exception).__name__)
     async with career_transaction() as connection:
         queue = CareerQueue(connection)
         if row["kind"] == "TRAINING":
@@ -189,6 +221,8 @@ async def _run_claimed(row: dict) -> str:
             error = None if result is not None else error or "Agent 未生成训练计划"
         if error and transient and await queue.retry_transient(row):
             return "RETRY_QUEUED"
+        if row["kind"] == "TRAINING" and current["context_json"].get("trainingContract"):
+            await record_training_outcome(queue, current, error, failure)
         if row["kind"] == "INTERVIEW_TURN" and error is None:
             interviews = CareerInterviews(CareerRecords(connection, row["user_id"]))
             session = await interviews.find(row["request_json"]["sessionId"], lock=True)
@@ -199,6 +233,21 @@ async def _run_claimed(row: dict) -> str:
         else:
             finished = await queue.finish(row, result, error)
     return ("FAILED" if error else "SUCCEEDED") if finished else "STALE"
+
+
+async def record_training_outcome(queue: CareerQueue, row: dict, error: str | None, failure: str | None) -> None:
+    saved = row.get("training_runtime_json")
+    if saved is None:
+        return
+    contract = TrainingContract.model_validate(row["context_json"]["trainingContract"])
+    state = TrainingProgress.model_validate(saved)
+    runtime = TrainingExecution(contract, state, NativeCareerCheckpoints(row).training_runtime)
+    elapsed_ms = int((datetime.now(timezone.utc) - state.startedAt).total_seconds() * 1000)
+    details = {**runtime.details(), "stage": "FAILED" if error else "COMPLETED", "errorCode": failure if error else None,
+               "validation": state.lastReport.public() if state.lastReport else None}
+    await queue.record_event(row, {"sequenceNo": -3, "step": "training_outcome",
+                                  "outcome": "failed" if error else "succeeded", "elapsedMs": elapsed_ms,
+                                  "inputTokens": None, "outputTokens": None, "details": details})
 
 
 async def recover_interview_turns() -> None:
@@ -288,6 +337,8 @@ async def monitor_queue() -> None:
                     FROM career_task WHERE status IN ('RUNNING', 'QUEUED')
                 """))
                 queued, expired, oldest = rows.one()
+            async with career_transaction() as connection:
+                await CareerQueue(connection).prune_training_diagnostics()
             await record_queue_sample(queued, expired, max(0, oldest))
             await deliver_queue_alerts()
         except Exception as error:

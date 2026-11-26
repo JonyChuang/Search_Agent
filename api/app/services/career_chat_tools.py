@@ -36,7 +36,14 @@ REPLAN_REQUEST = re.compile(
 
 
 def requests_plan(message: str) -> bool:
-    return len(message) <= 120 and any(rule.fullmatch(message.strip()) for rule in (PLAN_REQUEST, REPLAN_REQUEST))
+    if len(message) > 800 or any(marker in message for marker in ("?", "？", "```", "~~~", "如果", "不要生成")):
+        return False
+    command = re.split(r"[，,。；;！!\n]", message.strip(), maxsplit=1)[0]
+    if PLAN_REQUEST.fullmatch(command) or REPLAN_REQUEST.fullmatch(command):
+        return True
+    return bool(re.fullmatch(r"(?:请\s*)?(?:(?:下|本|这)?周[一二三四五六日天]|\d{4}-\d{2}-\d{2}|今天|明天|后天)"
+                             r"(?:之前|以前|前)完成.{1,60}复习", command)
+                and re.search(r"(?:^|[，,。；;])\s*安排\s*[0-9一二两三四五六七八九十]+\s*道(?:练习)?题", message))
 
 
 class CareerToolError(Exception):
@@ -49,7 +56,10 @@ class CareerChatTools:
         self.authorization = authorization
         self.user_id = user_id
 
-    async def _request(self, method: str, path: str, *, pinned: list[dict] | None = None, **kwargs):
+    async def _request(
+        self, method: str, path: str, *, pinned: list[dict] | None = None,
+        conversation_id: str | None = None, request_text: str = "", **kwargs,
+    ):
         if not self._permitted(method, path, kwargs):
             logger.warning("Career tool rejected user=%s job=%s", self.user_id, self.job_id)
             raise CareerToolError("当前对话不支持该项求职操作")
@@ -57,7 +67,10 @@ class CareerChatTools:
             if settings.career_mysql_host and self.user_id is not None:
                 async with career_transaction() as connection:
                     records = CareerRecords(connection, str(self.user_id))
-                    return jsonable_encoder(await self._native_request(records, method, path, kwargs, pinned=pinned))
+                    return jsonable_encoder(await self._native_request(
+                        records, method, path, kwargs, pinned=pinned,
+                        conversation_id=conversation_id, request_text=request_text,
+                    ))
             async with httpx.AsyncClient(
                 base_url=settings.career_backend_base_url, timeout=8, trust_env=False,
                 headers={"Authorization": self.authorization},
@@ -91,6 +104,7 @@ class CareerChatTools:
 
     async def _native_request(
         self, records: CareerRecords, method: str, path: str, payload: dict, *, pinned: list[dict] | None = None,
+        conversation_id: str | None = None, request_text: str = "",
     ):
         job = str(self.job_id)
         owned_job = await records.jobs().get(job)
@@ -116,7 +130,10 @@ class CareerChatTools:
             if path == "/api/career/tasks/training":
                 from app.controllers.career_task_controller import TrainingRequest, submit
 
-                return (await submit("TRAINING", TrainingRequest.model_validate(data), records, pinned=pinned))["data"]
+                return (await submit(
+                    "TRAINING", TrainingRequest.model_validate(data), records, pinned=pinned,
+                    conversation_id=conversation_id, request_text=request_text,
+                ))["data"]
             if path == "/api/career/interviews":
                 return await CareerInterviews(records).start(data["requestId"], job, data["mode"], data["count"])
             if path == "/api/career/applications":
@@ -125,9 +142,15 @@ class CareerChatTools:
                 return await CareerResumes(records).create(data["requestId"], job, data["experienceIds"])
         raise CareerToolError("当前对话不支持该项求职操作")
 
-    async def create_plan(self, request_id: uuid.UUID, *, pinned: list[dict] | None = None) -> str:
+    async def create_plan(
+        self, request_id: uuid.UUID, *, pinned: list[dict] | None = None,
+        conversation_id: str | None = None, request_text: str = "", time_zone: str | None = None,
+    ) -> str:
+        payload = {"jobId": str(self.job_id), "requestId": str(request_id)}
+        if time_zone and settings.career_mysql_host:
+            payload["requirements"] = {"timeZone": time_zone}
         data = await self._request("POST", "/api/career/tasks/training",
-                                   pinned=pinned, json={"jobId": str(self.job_id), "requestId": str(request_id)})
+                                   pinned=pinned, conversation_id=conversation_id, request_text=request_text, json=payload)
         try:
             return str(uuid.UUID(data["id"]))
         except (KeyError, TypeError, ValueError) as error:

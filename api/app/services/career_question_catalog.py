@@ -28,6 +28,12 @@ def skills_in(value: str) -> set[str]:
     return {skill for skill, pattern in _ALIAS_PATTERN.items() if pattern.search(value)}
 
 
+def exact_skill(value: str) -> str | None:
+    value = value.strip().casefold()
+    return next((skill for skill, aliases in _ALIASES.items()
+                 if value == skill.casefold() or value in aliases), None)
+
+
 def required_skills(job: dict) -> set[str]:
     skills = skills_in(job.get("skills") or "")
     for line in re.split(r"[\n。；]", job.get("jd") or ""):

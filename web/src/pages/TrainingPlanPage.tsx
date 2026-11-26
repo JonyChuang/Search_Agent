@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
-import { Alert, Button, Collapse, Form, Select, Space, Typography } from 'antd'
+import { Alert, Button, Checkbox, Collapse, DatePicker, Form, InputNumber, Select, Space, Typography } from 'antd'
+import type { Dayjs } from 'dayjs'
 import { Link, useSearchParams } from 'react-router-dom'
 import { careerWorkflow } from '@/api/careerWorkflow'
 import { useCurrentJob } from './career/CurrentJob'
@@ -15,6 +16,15 @@ import PreparationSidebar, { LatestReview } from './career/PreparationSidebar'
 import styles from './career/workspace.module.css'
 
 const { Paragraph } = Typography
+
+interface PlanForm {
+  jobId: string
+  role?: string
+  questionCount?: number | null
+  deadline?: Dayjs | null
+  prioritySkills?: string[]
+  excludeCompleted?: boolean
+}
 
 export default function TrainingPlanPage({ job }: { job?: JobInput & { id: string } }) {
   const { jobs, loading } = useCurrentJob()
@@ -49,9 +59,18 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
         {source && preparation.data && !latest && <Alert type="warning" message="此岗位无法使用所选模拟题批次。"
           action={<Link to={preparationPath('plan', job ? { job: job.id } : undefined)}>继续使用最近题目</Link>} />}
         {fromInterview && <Alert type="info" showIcon message="新计划会参考本岗位近期的多轮面试点评。" />}
-        <Form layout="vertical" onFinish={(values: { jobId: string; role?: string }) => training.run(async () => {
-          const input = job ? { jobId: job.id, preparationId: latest?.id, preferredQuestion } : values
-          await training.submit('training', { ...input, documentIds, skillId }, careerWorkflow.training)
+        <Form layout="vertical" onFinish={(values: PlanForm) => training.run(async () => {
+          const input = job ? { jobId: job.id, preparationId: latest?.id, preferredQuestion }
+            : { jobId: values.jobId, role: values.role }
+          const { questionCount, deadline, prioritySkills, excludeCompleted } = values
+          const requirements = questionCount || deadline || prioritySkills?.length || excludeCompleted ? {
+            questionCount: questionCount ?? undefined,
+            deadline: deadline?.format('YYYY-MM-DD'),
+            prioritySkills: prioritySkills?.length ? prioritySkills : undefined,
+            excludeCompleted: excludeCompleted || undefined,
+            timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          } : undefined
+          await training.submit('training', { ...input, documentIds, skillId, requirements }, careerWorkflow.training)
           setCreateOpen(false)
           refreshTraining((n) => n + 1)
         })}>
@@ -72,6 +91,20 @@ export default function TrainingPlanPage({ job }: { job?: JobInput & { id: strin
               <Select options={Object.entries(roles).map(([value, label]) => ({ value, label }))} />
             </Form.Item>
           </>}
+          <Space wrap align="start">
+            <Form.Item name="questionCount" label="题目数量">
+              <InputNumber min={1} max={8} precision={0} placeholder="自动安排" />
+            </Form.Item>
+            <Form.Item name="deadline" label="截止日期">
+              <DatePicker placeholder="选择日期" />
+            </Form.Item>
+          </Space>
+          <Form.Item name="prioritySkills" label="优先复习技能">
+            <Select mode="tags" maxCount={8} tokenSeparators={[',', '，']} placeholder="按复习顺序输入技能并按回车" />
+          </Form.Item>
+          <Form.Item name="excludeCompleted" valuePropName="checked">
+            <Checkbox>排除已完成的题目</Checkbox>
+          </Form.Item>
           <PreparationDocuments value={documentIds} onChange={setDocumentIds} skillId={skillId} onSkillChange={setSkillId} />
           <Space wrap>
             <Button htmlType="submit" type="primary" loading={training.saving}

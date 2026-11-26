@@ -826,7 +826,11 @@ class ChatService:
             if settings.career_mysql_host and conv is not None:
                 saved = await CareerContextVersions(self.session, user_id, conv.id, career.job_id).read()
                 pinned = constraint_details(saved["state"], saved["version"], saved.get("field_meta"))
-            async for event in self._create_career_plan(career, body.career_plan_request_id, pinned):
+            scope = {}
+            if settings.career_mysql_host and conv is not None:
+                scope = {"conversation_id": str(conv.id), "request_text": current_request,
+                         "time_zone": body.career_time_zone}
+            async for event in self._create_career_plan(career, body.career_plan_request_id, pinned, **scope):
                 yield event
             return
         if career and changes and not (current_request or body.image_keys or attachments):
@@ -1008,6 +1012,7 @@ class ChatService:
 
     async def _create_career_plan(
         self, career: CareerChatTools, request_id: uuid.UUID, pinned: list[dict],
+        **scope,
     ) -> AsyncGenerator[dict, None]:
         tool_event = {"tool": CREATE_PLAN_TOOL, "query": "创建当前岗位的备考计划"}
         yield {"type": "tool_start", **tool_event}
@@ -1015,7 +1020,7 @@ class ChatService:
         message = None
         async with get_tracer().span(f"工具:{CREATE_PLAN_TOOL}", span_type="tool_call") as span:
             try:
-                task_id = await career.create_plan(request_id, pinned=pinned)
+                task_id = await career.create_plan(request_id, pinned=pinned, **scope)
                 span.set_payload("career_task_id", task_id)
             except CareerToolError as error:
                 message = str(error)

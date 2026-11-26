@@ -48,7 +48,7 @@ async def get_default_config_for_type(
 
 
 def build_chat_model(
-    config: ModelConfig, *, temperature: float = 0.7, streaming: bool = True
+    config: ModelConfig, *, temperature: float = 0.7, streaming: bool = True, max_retries: int | None = None,
 ) -> ChatOpenAI:
     """按模型配置实例化 ChatOpenAI。
 
@@ -62,6 +62,7 @@ def build_chat_model(
         temperature=temperature,
         streaming=streaming,
         stream_usage=True,
+        **({"max_retries": max_retries} if max_retries is not None else {}),
     )
 
 
@@ -77,10 +78,11 @@ async def build_default_chat_model(
     temperature: float = 0.7,
     streaming: bool = True,
     deepseek_tool_mode: bool = False,
+    max_retries: int | None = None,
 ) -> tuple[ChatOpenAI, ModelConfig]:
     """取默认对话配置并构建 ChatOpenAI，返回 (model, config)。"""
     config = await get_default_chat_config(session, user_id)
-    model = build_chat_model(config, temperature=temperature, streaming=streaming)
+    model = build_chat_model(config, temperature=temperature, streaming=streaming, max_retries=max_retries)
     if deepseek_tool_mode and urlsplit(config.base_url).hostname == "api.deepseek.com":
         # The DeepSeek API requires non-thinking mode for named tool choices.
         model.extra_body = {**(model.extra_body or {}), "thinking": {"type": "disabled"}}

@@ -11,7 +11,9 @@ from app.services.career_practice import CareerPractice
 from app.services.career_question_catalog import order_questions, question_key
 from app.services.career_queue import CareerQueue, conflict
 from app.services.career_records import CareerRecords
+from app.services.career_training_contract import TrainingContract, TrainingContractError, feasible_questions
 from app.services.career_training_harness import learn_from_attempts, learning_candidates
+from app.services.career_learning_state import learning_state
 
 OPEN_QUESTION = re.compile(r"^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})-([0-4])$")
 
@@ -48,6 +50,7 @@ class CareerTraining:
         raise BizError("岗位模拟题不存在", code=404, status_code=404)
 
     async def apply_training_snapshot(self, job_id: str, request: dict, context: dict) -> None:
+        contract = TrainingContract.model_validate(context["trainingContract"]) if "trainingContract" in context else None
         facts = [fact for fact in await self.records.experiences().all() if fact["confirmed"]]
         context["experiences"] = [
             {"id": fact["id"], "title": fact["title"], "description": fact["description"][:1800]}
@@ -86,9 +89,12 @@ class CareerTraining:
                 context["preferredQuestion"] = preferred
         elif preferred:
             raise BizError("请指定模拟题批次", code=400)
-        elif role is None and not await self.practice.matching_questions(context["job"]):
+        elif contract is None and role is None and not await self.practice.matching_questions(context["job"]):
             raise conflict("请先在面经与题库生成该岗位的模拟题")
-        learning = learn_from_attempts(await self.practice.training_attempts(job_id), context["job"])
+        attempts = await self.practice.training_attempts(job_id)
+        learning = (learning_state(attempts, contract.requiredSkills, contract.createdAt)
+                    if contract and contract.learningVersion == "objective-practice-v2"
+                    else learn_from_attempts(attempts, context["job"]))
         if learning:
             context["practiceLearning"] = learning
 
@@ -96,7 +102,13 @@ class CareerTraining:
         context = row["context_json"]
         job = context["job"]
         role = context.get("role")
-        public = await self.practice.matching_questions(job, role)
+        contract = TrainingContract.model_validate(context["trainingContract"]) if "trainingContract" in context else None
+        if contract:
+            public = await self.practice.matching_questions(
+                job, role, extra_skills=set(contract.requiredSkills), pinned_ids={ref.id for ref in contract.requiredQuestions},
+            )
+        else:
+            public = await self.practice.matching_questions(job, role)
         items = []
         preparation = context.get("preparationId") or row["request_json"].get("preparationId")
         if preparation:
@@ -106,19 +118,39 @@ class CareerTraining:
                 "sourceName": "AI 模拟题", "topic": question["topic"], "prompt": question["prompt"],
             } for index, question in enumerate(questions))
         eligible = [*items, *public]
+        if contract:
+            available = {question_key(item) for item in eligible}
+            for ref in contract.requiredQuestions:
+                if (ref.id, ref.version) in available:
+                    continue
+                try:
+                    if OPEN_QUESTION.fullmatch(ref.id):
+                        item = await self.open_question(row["job_id"], ref.id, ref.version)
+                        eligible.append({"id": ref.id, "version": ref.version, "kind": "OPEN", "sourceName": "AI 模拟题",
+                                         "topic": item["topic"], "prompt": item["prompt"]})
+                    else:
+                        item = await self.practice.question(ref.id, ref.version)
+                        if role is None or item["role"] == role:
+                            eligible.append(item)
+                except BizError as error:
+                    if error.status_code != 404:
+                        raise
         learning = context.get("practiceLearning")
-        if learning and public:
-            completed = await self.practice.plan_attempts(
-                [question_key(question) for question in public], row["job_id"], "role" in context, feedback=False,
+        if learning or (contract and contract.excludeCompleted):
+            completed_keys = await self.completed_questions(
+                eligible, row["job_id"], "role" in context, include_open=bool(contract and contract.excludeCompleted),
             )
-            completed_keys = {question_key(question) for question in completed}
             eligible = [{**question, "practiceCompleted": True} if question_key(question) in completed_keys else question
                         for question in eligible]
         targets = learning_candidates(eligible, learning)
-        catalog = order_questions(eligible, job, context.get("preferredQuestion"), targets)[:30]
+        catalog = order_questions(eligible, job, context.get("preferredQuestion"), targets)
+        if contract:
+            catalog = feasible_questions(contract, catalog)
+            if not catalog:
+                raise TrainingContractError("当前岗位方向暂无可用训练题目。")
         if not catalog:
             raise conflict("当前岗位方向暂无训练题目")
-        return jsonable_encoder(catalog)
+        return jsonable_encoder(catalog[:30])
 
     async def _open_attempts(self, job: str, ids: list[str]) -> list[dict]:
         if not ids:
@@ -150,16 +182,24 @@ class CareerTraining:
     async def progress(self, task_id: str) -> list[dict]:
         row = await self._plan(task_id)
         questions = (row["result_json"] or {}).get("questions", [])
-        objective = [(q["id"], q["version"]) for q in questions if q.get("kind") != "OPEN"]
-        open_refs = {(q["id"], q["version"]) for q in questions if q.get("kind") == "OPEN"}
-        job = row["job_id"]
-        completed = await self.practice.plan_attempts(
-            objective, job, "role" in row["context_json"], feedback=False,
-        )
-        attempts = await self._open_attempts(job, [qid for qid, version in open_refs if version == 1])
+        keys = await self.completed_questions(questions, row["job_id"], "role" in row["context_json"])
+        return [{"id": q["id"], "version": q["version"]} for q in questions if question_key(q) in keys]
+
+    async def completed_questions(
+        self, questions: list[dict], job: str, include_unscoped: bool, *, include_open: bool = True,
+    ) -> set[tuple[str, int]]:
+        objective = [question_key(q) for q in questions if q.get("kind") != "OPEN"]
+        completed = await self.practice.plan_attempts(objective, job, include_unscoped, feedback=False)
         keys = {(q["id"], q["version"]) for q in completed}
-        keys.update((q["questionId"], 1) for q in attempts)
+        open_refs = {question_key(q) for q in questions if q.get("kind") == "OPEN"} if include_open else set()
         if open_refs:
+            rows = await self.records.db.execute(text("""
+                SELECT DISTINCT request_json->>'$.questionId' FROM career_task
+                WHERE user_id = :user AND job_id = :job AND kind = 'INTERVIEW' AND status = 'SUCCEEDED'
+                    AND request_json->>'$.questionId' IN :ids
+            """).bindparams(bindparam("ids", expanding=True)),
+                {"user": self.user, "job": job, "ids": [qid for qid, version in open_refs if version == 1]})
+            keys.update((qid, 1) for qid in rows.scalars())
             sql = text("""
                 SELECT DISTINCT q.question_id, q.question_version FROM career_mock_interview s
                 JOIN JSON_TABLE(s.state_json, '$.rounds[*]' COLUMNS (
@@ -173,7 +213,7 @@ class CareerTraining:
             """).bindparams(bindparam("refs", expanding=True))
             rows = await self.records.db.execute(sql, {"user": self.user, "job": job, "refs": list(open_refs)})
             keys.update(tuple(item) for item in rows)
-        return [{"id": q["id"], "version": q["version"]} for q in questions if (q["id"], q["version"]) in keys]
+        return keys
 
     async def review_snapshot(self, plan_id: str) -> tuple[str, dict]:
         row = await self._plan(plan_id)

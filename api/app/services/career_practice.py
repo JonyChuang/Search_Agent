@@ -6,7 +6,8 @@ from datetime import timezone
 from sqlalchemy import bindparam, text
 
 from app.core.exceptions import BizError
-from app.services.career_question_catalog import order_questions, required_skills, skills_in
+from app.services.career_question_catalog import order_questions, required_skills
+from app.services.career_training_contract import topic_skills
 from app.services.career_queue import conflict
 from app.services.career_records import CareerRecords
 
@@ -83,18 +84,21 @@ class CareerPractice:
             raise BizError("题目版本不存在", code=404, status_code=404)
         return dict(row)
 
-    async def matching_questions(self, job: dict, role: str | None = None) -> list[dict]:
+    async def matching_questions(
+        self, job: dict, role: str | None = None, *, extra_skills: set[str] | None = None,
+        pinned_ids: set[str] | None = None,
+    ) -> list[dict]:
         candidates = await self.questions(role)
         if role is not None:
             return order_questions(candidates, job)
-        needed = required_skills(job)
+        needed = required_skills(job) | (extra_skills or set())
         content = " ".join(str(job.get(key) or "") for key in ("title", "jd", "skills")).lower()
         matches = []
         for candidate in candidates:
             topic = candidate["topic"].lower()
             terms = re.split(r"[\s、/]+", topic)
-            if topic in content or any(len(term) > 1 and term in content for term in terms) \
-                    or skills_in(topic) & needed:
+            if candidate["id"] in (pinned_ids or ()) or topic in content \
+                    or any(len(term) > 1 and term in content for term in terms) or topic_skills(topic, needed):
                 matches.append(candidate)
         return order_questions(matches, job)
 
@@ -152,10 +156,11 @@ class CareerPractice:
 
     async def training_attempts(self, job: str) -> list[dict]:
         rows = await self.db.execute(text("""
-            SELECT recent.attemptId, recent.questionId, recent.questionVersion, recent.correct, q.topic
+            SELECT recent.attemptId, recent.questionId, recent.questionVersion, recent.correct, recent.submittedAt, q.topic,
+                (SELECT MAX(v.version) FROM career_question_version v WHERE v.id = recent.questionId) AS currentVersion
             FROM (
                 SELECT a.request_id AS attemptId, a.question_id AS questionId,
-                    a.question_version AS questionVersion, a.correct, a.sequence_id
+                    a.question_version AS questionVersion, a.correct, a.sequence_id, a.submitted_at AS submittedAt
                 FROM career_practice_attempt a
                 WHERE a.user_id = :user AND a.job_id = :job
                     AND a.submitted_at >= CURRENT_TIMESTAMP - INTERVAL 30 DAY

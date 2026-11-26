@@ -1,6 +1,7 @@
 """应用配置：全部从环境变量 / .env 读取，不硬编码。"""
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
@@ -39,6 +40,9 @@ class Settings(BaseSettings):
     career_mysql_user: str = "career"
     career_mysql_password: SecretStr = SecretStr("")
     career_native_worker_enabled: bool = False
+    career_training_harness: Literal["v1", "v2"] = "v2"
+    career_training_repair: Literal["local-v1", "regenerate-v1"] = "local-v1"
+    career_training_learning: Literal["objective-practice-v1", "objective-practice-v2"] = "objective-practice-v1"
     mcp_shared_tool_cache_enabled: bool = False
     mcp_reviewed_reads: list[ReviewedMCPRead] = []
     memory_shared_recall_cache_enabled: bool = False

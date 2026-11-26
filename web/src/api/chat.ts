@@ -519,6 +519,7 @@ export async function streamChat(
       enable_web_search: opts.enableWebSearch ?? null,
       career_job_id: opts.careerJobId ?? null,
       career_plan_request_id: opts.careerPlanRequestId ?? null,
+      career_time_zone: opts.careerJobId ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined,
       career_action: opts.careerAction ?? null,
     },
     handlers,

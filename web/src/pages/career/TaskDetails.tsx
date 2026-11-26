@@ -12,9 +12,15 @@ const stepLabels: Record<string, string> = {
   resume_context: '沿用备考上下文检查点',
   resume_catalog: '沿用候选题检查点',
   resume_draft: '从已保存的计划草稿完成任务',
+  resume_training: '恢复训练执行及剩余预算',
   assemble_context: '装配备考上下文',
   list_training_questions: '读取候选题',
   create_training_plan: '生成训练计划',
+  training_generate: '生成并验证训练计划',
+  training_patch: '修复选题和学习步骤',
+  training_deterministic: '校正题目版本或日期',
+  training_regenerate: '重新生成并验证计划',
+  training_outcome: '训练任务结果',
   preparation: '生成岗位模拟题',
   interview: '生成面试复盘',
   review: '生成复习建议',
@@ -28,10 +34,16 @@ function Events({ id }: { id: string }) {
   return <List size="small" loading={!events.data} dataSource={events.data} locale={{ emptyText: '暂无执行记录' }}
     rowKey={(item) => `${item.generation}:${item.sequenceNo}`} renderItem={(item) => (
       <List.Item>
-        第 {item.generation} 次执行 · {stepLabels[item.step] ?? item.step} · {item.outcome === 'succeeded' ? '完成' : '失败'}
-        {' · '}{(item.elapsedMs / 1000).toFixed(2)} 秒
-        {item.inputTokens !== null && ` · 输入 ${item.inputTokens} tokens`}
-        {item.outputTokens !== null && ` · 输出 ${item.outputTokens} tokens`}
+        <div>
+          第 {item.generation} 次执行 · {stepLabels[item.step] ?? item.step} · {item.outcome === 'succeeded' ? '完成' : '失败'}
+          {' · '}{(item.elapsedMs / 1000).toFixed(2)} 秒
+          {item.inputTokens !== null && ` · 输入 ${item.inputTokens} tokens`}
+          {item.outputTokens !== null && ` · 输出 ${item.outputTokens} tokens`}
+          {item.details?.errorCode && <Typography.Text type="secondary"> · {item.details.errorCode}</Typography.Text>}
+          {!!item.details?.validation?.errors.length && <ul>{item.details.validation.errors.map((issue, index) => (
+            <li key={index}>{issue.message}</li>
+          ))}</ul>}
+        </div>
       </List.Item>
     )} />
 }

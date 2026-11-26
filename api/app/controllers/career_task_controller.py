@@ -1,16 +1,19 @@
 """Career task submission and state management on the native backend."""
 
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.controllers.career_records_controller import CareerRoute, Records
 from app.core.exceptions import BizError
 from app.core.response import success
 from app.services.career_queue import PUBLIC_KINDS, CareerQueue, view
 from app.services.career_training import OPEN_QUESTION, CareerTraining
+from app.services.career_training_contract import TrainingContractError, TrainingRequirements, build_contract
 
 router = APIRouter(prefix="/career/tasks", tags=["career"], route_class=CareerRoute)
 
@@ -35,6 +38,7 @@ class TrainingRequest(JobRequest):
     skillId: UUID | None = None
     previousPlanId: UUID | None = None
     reviewTaskId: UUID | None = None
+    requirements: TrainingRequirements | None = None
 
 
 class InterviewRequest(JobRequest):
@@ -89,13 +93,26 @@ async def review(body: ReviewRequest, db: Records):
     return success(view(await queue.insert(db.user, "REVIEW", job_id, request, context)))
 
 
-async def submit(kind: str, body: JobRequest, db: Records, *, pinned: list[dict] | None = None) -> dict:
+async def submit(
+    kind: str, body: JobRequest, db: Records, *, pinned: list[dict] | None = None,
+    conversation_id: str | None = None, request_text: str = "",
+) -> dict:
+    created_at = datetime.now(timezone.utc)
     queue = CareerQueue(db.db)
     request = body.model_dump(mode="json", exclude_none=True)
     if request.get("documentIds") == []:
         request.pop("documentIds")
     if isinstance(body, TrainingRequest):
         request.setdefault("role", None)
+    if conversation_id is not None:
+        previous = await queue.lookup_request(db.user, request["requestId"])
+        if not previous or (previous["context_json"].get("trainingContract") or
+                            previous["request_json"].get("conversationId")):
+            request["conversationId"] = conversation_id
+            if request_text:
+                request["studyRequest"] = request_text
+        elif body.requirements and body.requirements.model_fields_set == {"timeZone"}:
+            request.pop("requirements", None)
     existing = await queue.by_request(db.user, kind, request)
     if existing:
         return success(view(existing))
@@ -122,10 +139,27 @@ async def submit(kind: str, body: JobRequest, db: Records, *, pinned: list[dict]
                 raise BizError("请先选择用于整理面经的资料", code=400)
             if body.topic and body.topic.strip():
                 context["topic"] = body.topic.strip()
+    catalog = None
     if isinstance(body, TrainingRequest):
         if pinned:
             context["studyConstraints"] = pinned
-        await CareerTraining(db).apply_training_snapshot(job["id"], request, context)
+        service = CareerTraining(db)
+        try:
+            if settings.career_training_harness == "v2":
+                contract = build_contract(
+                    user=db.user, job_id=job["id"], conversation=conversation_id, job=snapshot,
+                    preferred=body.preferredQuestion, requirements=body.requirements or TrainingRequirements(),
+                    request_text=request_text, pinned=pinned or [], created_at=created_at,
+                    repair=settings.career_training_repair, learning=settings.career_training_learning,
+                )
+                context["trainingContract"] = contract.model_dump(mode="json")
+            elif body.requirements and body.requirements.model_fields_set - {"timeZone"}:
+                raise TrainingContractError("当前训练策略未启用结构化要求。", "CONTRACT_CONFIRMATION_REQUIRED")
+            await service.apply_training_snapshot(job["id"], request, context)
+            if "trainingContract" in context:
+                catalog = await service.catalog({"context_json": context, "request_json": request, "job_id": job["id"]})
+        except TrainingContractError as error:
+            raise BizError(str(error), code=409, status_code=409) from error
     if isinstance(body, InterviewRequest):
         service = CareerTraining(db)
         if OPEN_QUESTION.fullmatch(body.questionId):
@@ -134,7 +168,10 @@ async def submit(kind: str, body: JobRequest, db: Records, *, pinned: list[dict]
             question = await service.practice.evidence_question(body.questionId, body.questionVersion)
         context["question"] = question
         context["answer"] = body.answer.strip()
-    row = await queue.insert(db.user, kind, job["id"], request, context)
+    if catalog is not None:
+        row = await queue.insert(db.user, kind, job["id"], request, context, training_catalog=catalog)
+    else:
+        row = await queue.insert(db.user, kind, job["id"], request, context)
     return success(view(row))
 
 

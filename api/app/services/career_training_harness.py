@@ -2,7 +2,9 @@
 
 from collections import defaultdict
 
+from app.services.career_learning_state import LEARNING_V2
 from app.services.career_question_catalog import question_key, required_skills, skills_in
+from app.services.career_training_contract import topic_skills
 
 POLICY_VERSION = "objective-practice-v1"
 
@@ -39,16 +41,19 @@ def learn_from_attempts(attempts: list[dict], job: dict) -> dict | None:
 
 def learning_candidates(catalog: list[dict], learning: dict | None) -> dict[tuple[str, int], tuple[str, ...]]:
     """Map eligible, unattempted question versions to current practice priorities."""
-    if not learning or learning.get("policyVersion") != POLICY_VERSION:
+    if not learning or learning.get("policyVersion") not in {POLICY_VERSION, LEARNING_V2}:
         return {}
     attempted = {tuple(key) for key in learning["attempted"]}
     priorities = [item["skill"] for item in learning["priorities"]]
+    due = {item["skill"] for item in learning["priorities"] if item.get("reviewDue")}
+    priority_set = set(priorities)
     matches = {}
     for question in catalog:
         key = question_key(question)
-        if key in attempted or question.get("practiceCompleted") or question.get("kind") == "OPEN":
+        if question.get("kind") == "OPEN":
             continue
-        question_skills = skills_in(question.get("topic", ""))
+        eligible = due if key in attempted or question.get("practiceCompleted") else priority_set
+        question_skills = topic_skills(question.get("topic", ""), eligible)
         topics = tuple(skill for skill in priorities if skill in question_skills)
         if topics:
             matches[key] = topics

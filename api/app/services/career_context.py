@@ -86,6 +86,7 @@ def prepare_context(raw: dict, saved: dict | None, skill: dict, sources: list[di
     payload.pop("skillId", None)
     payload.pop("preparationId", None)
     payload.pop("practiceLearning", None)
+    payload.pop("trainingContract", None)
     if skill.get("selected"):
         payload["skillGuidance"] = skill["selected"]["guidance"]
     feedback = payload.pop("feedback", [])

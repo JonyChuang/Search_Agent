@@ -50,7 +50,7 @@ async def verify_career_schema() -> None:
             "SELECT version, success FROM flyway_schema_history WHERE version IS NOT NULL"
         ))
         applied = {row.version for row in rows if row.success}
-        missing = {str(version) for version in range(1, 20)} - applied
+        missing = {str(version) for version in range(1, 21)} - applied
         if missing:
             raise RuntimeError(f"Career database migrations missing: {', '.join(sorted(missing))}")
 

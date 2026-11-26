@@ -74,6 +74,8 @@ flowchart TD
     UI["React / TypeScript"] --> API["FastAPI / Python 3.12"]
     API -->|求职业务与任务租约| Career["MySQL 8.4"]
     Career <-->|任务认领与检查点| CareerWorker["Python Career Worker"]
+    CareerWorker -->|备考计划| Training["TRAINING Harness V2"]
+    Training -->|契约验证、修复与诊断| Career
     API -->|账号、对话与模型配置| Data["PostgreSQL / Alembic"]
     API -->|知识库召回与记忆读取| Retrieval["Elasticsearch / Neo4j"]
     API -->|流式续传与后台队列| Redis["Redis"]
@@ -81,7 +83,7 @@ flowchart TD
 ```
 
 - FastAPI 提供业务接口与 Agent 工具执行入口。MySQL 短事务原子认领任务，通过执行代次、租约和幂等键处理重复请求及过期回写。
-- 训练任务分别保存题目目录和计划草稿，重启后从已保存的检查点恢复。知识库结合父子分块、向量及 BM25 召回，支持可选重排。
+- 备考任务冻结题库和任务契约，按累计预算生成、验证及修复计划。Worker 通过原有检查点恢复。知识库结合父子分块、向量及 BM25 召回，支持可选重排。
 - React 提供求职工作台、流式对话、文档预览和任务状态。页面与 Agent 工具使用同一套业务权限规则。
 
 
@@ -195,6 +197,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build --
 生产编排由独立的 `career-worker` 消费求职任务。MCP 工具描述缓存与记忆向量缓存默认启用。升级后，在工具配置中同步并逐项授权外部 MCP 工具。
 
 [Python 架构、升级与验收](docs/python-runtime-operations.md)
+
+[备考 Harness V2 技术报告与评测](docs/career-training-harness-v2.md)
 
 ## 评测与验证
 

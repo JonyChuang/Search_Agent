@@ -14,13 +14,14 @@ from app.core.exceptions import BizError
 
 PUBLIC_KINDS = {"TRAINING", "REVIEW", "INTERVIEW", "PREPARATION", "DISCOVERY"}
 MAX_AUTOMATIC_RETRIES = 2
+TRAINING_EVENT_RETENTION_DAYS = 30
 FENCE = """
     id = :id AND generation = :generation AND lease_token = :lease
     AND status = 'RUNNING' AND lease_until > CURRENT_TIMESTAMP(6)
 """
 TASK_JSON = (
     "request_json", "context_json", "result_json", "training_catalog_json",
-    "training_draft_json", "agent_context_json",
+    "training_draft_json", "agent_context_json", "training_runtime_json",
 )
 
 
@@ -72,7 +73,7 @@ def view(row: dict) -> dict:
 def _decode(row) -> dict:
     decoded = dict(row)
     for field in TASK_JSON:
-        if decoded[field] is not None:
+        if decoded.get(field) is not None:
             decoded[field] = json.loads(decoded[field])
     return decoded
 
@@ -118,7 +119,7 @@ class CareerQueue:
 
     async def insert(
         self, user: str, kind: str, job_id: str, request: dict, context: dict,
-        *, request_id: str | None = None,
+        *, request_id: str | None = None, training_catalog: list[dict] | None = None,
     ) -> dict:
         request_id = request_id or request["requestId"]
         await self._lock_scheduler()
@@ -128,9 +129,12 @@ class CareerQueue:
         await self._check_queue(user)
         task_id = str(uuid4())
         await self._run("""
-            INSERT INTO career_task (id, user_id, request_id, kind, job_id, request_json, context_json)
-            VALUES (:id, :user, :request_id, :kind, :job, :request, :context)
+            INSERT INTO career_task (id, user_id, request_id, kind, job_id, request_json, context_json,
+                                     training_catalog_json, training_catalog_at)
+            VALUES (:id, :user, :request_id, :kind, :job, :request, :context,
+                    :catalog, IF(:catalog IS NULL, NULL, CURRENT_TIMESTAMP(6)))
         """, id=task_id, user=user, request_id=request_id, kind=kind, job=job_id,
+            catalog=json.dumps(training_catalog, ensure_ascii=False) if training_catalog is not None else None,
             request=json.dumps(request, ensure_ascii=False), context=json.dumps(context, ensure_ascii=False))
         return await self.owned(user, task_id, public=False)
 
@@ -148,11 +152,14 @@ class CareerQueue:
         await self.owned(user, task_id)
         rows = await self._run("""
             SELECT generation, sequence_no AS sequenceNo, step, outcome, elapsed_ms AS elapsedMs,
-                input_tokens AS inputTokens, output_tokens AS outputTokens, created_at AS createdAt
+                input_tokens AS inputTokens, output_tokens AS outputTokens,
+                CASE WHEN created_at >= TIMESTAMPADD(DAY, :retention, CURRENT_TIMESTAMP(6))
+                    THEN JSON_REMOVE(details_json, '$.replay') END AS details, created_at AS createdAt
             FROM career_task_event WHERE task_id = :id
             ORDER BY generation DESC, sequence_no DESC LIMIT 100
-        """, id=task_id)
-        return [dict(row, createdAt=row["createdAt"].replace(tzinfo=timezone.utc)) for row in rows.mappings()]
+        """, id=task_id, retention=-TRAINING_EVENT_RETENTION_DAYS)
+        return [dict(row, details=json.loads(row["details"]) if row["details"] else None,
+                     createdAt=row["createdAt"].replace(tzinfo=timezone.utc)) for row in rows.mappings()]
 
     async def retry(self, user: str, task_id: str, *, public: bool = True) -> dict:
         await self._lock_scheduler()
@@ -278,18 +285,35 @@ class CareerQueue:
         return saved
 
     async def record_event(self, row: dict, event: dict) -> None:
+        details = event.get("details")
         await self._run(f"""
             INSERT INTO career_task_event (task_id, generation, sequence_no, step, outcome,
-                                                elapsed_ms, input_tokens, output_tokens)
-            SELECT id, generation, :sequenceNo, :step, :outcome, :elapsedMs, :inputTokens, :outputTokens
+                                                elapsed_ms, input_tokens, output_tokens, details_json)
+            SELECT id, generation, :sequenceNo, :step, :outcome, :elapsedMs, :inputTokens, :outputTokens, :details_json
             FROM career_task WHERE {FENCE}
             ON DUPLICATE KEY UPDATE sequence_no = career_task_event.sequence_no
-        """, **self.lease(row), **event)
+        """, **self.lease(row), **event, details_json=json.dumps(details, ensure_ascii=False) if details else None)
         await self.active(row)
+
+    async def training_runtime(self, row: dict, value: dict) -> None:
+        # The generation and lease predicate guards every reservation and candidate update.
+        await self._run(f"""
+            UPDATE career_task SET training_runtime_json = :value
+            WHERE {FENCE} AND kind = 'TRAINING' AND training_draft_json IS NULL
+        """, value=json.dumps(value, ensure_ascii=False), **self.lease(row))
+        if (await self.active(row)).get("training_runtime_json") != value:
+            raise conflict("训练执行状态无法更新")
+
+    async def prune_training_diagnostics(self) -> None:
+        await self._run("""UPDATE career_task_event SET details_json = NULL
+            WHERE details_json IS NOT NULL AND created_at < TIMESTAMPADD(DAY, :retention, CURRENT_TIMESTAMP(6))
+            ORDER BY created_at LIMIT 200""", retention=-TRAINING_EVENT_RETENTION_DAYS)
 
     async def finish(self, row: dict, result: dict | None, error: str | None) -> bool:
         changed = await self._run(f"""
             UPDATE career_task SET status = :status, result_json = :result, error_message = :error,
+                training_runtime_json = IF(:status = 'SUCCEEDED',
+                    JSON_REMOVE(training_runtime_json, '$.candidate'), training_runtime_json),
                 lease_token = NULL, lease_until = NULL
             WHERE {FENCE}
         """, status="FAILED" if error else "SUCCEEDED", error=error,

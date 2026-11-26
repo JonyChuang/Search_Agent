@@ -9,6 +9,8 @@ FastAPI 负责求职 API、对话和 Agent 工具编排。独立 Python Career W
 3. 在 MCP 工具清单同步并授权。外部工具默认进入待确认列表。通过部署侧独立审核的只读工具，可由所属用户在清单中开通限时预授权。对话创建定时研究继续使用待确认列表。审批保留五分钟，仅消费一次。执行结果超时时先核对远程服务状态。
 4. 在已有求职对话中打开「上下文约束」。手动修改和回滚形成新版本，后续生成使用当前有效版本。旧对话首次写入版本时从历史读取初始约束。
 
+训练 Harness V2 使用 MySQL 迁移 `V20__career_training_harness.sql`。API 与 Worker 升级前应用迁移。新任务默认执行 V2 契约和定向修复，练习反馈保留 V1 策略，可通过 `CAREER_TRAINING_LEARNING=objective-practice-v2` 试用带时效和置信度的技能状态。`CAREER_TRAINING_REPAIR=regenerate-v1` 使用整份重生成，`CAREER_TRAINING_HARNESS=v1` 回退新任务的整个执行策略。已提交任务依据各自冻结的版本恢复。架构、回放和对照命令见 [备考 Harness V2 技术报告](career-training-harness-v2.md)。
+
 ## 清单落地与验证
 
 | 项目 | 本轮实现 |

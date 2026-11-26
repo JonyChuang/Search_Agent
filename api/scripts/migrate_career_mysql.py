@@ -47,8 +47,8 @@ async def migrate(directory: Path) -> None:
         for path in directory.iterdir()
         if path.is_file() and (match := re.fullmatch(r"V(\d+)__.*\.sql", path.name))
     )
-    if [version for version, _ in migrations] != list(range(1, 20)):
-        raise RuntimeError("Expected career migrations V1–V19")
+    if [version for version, _ in migrations] != list(range(1, 21)):
+        raise RuntimeError("Expected career migrations V1–V20")
     db = await aiomysql.connect(
         host=settings.career_mysql_host, port=settings.career_mysql_port,
         user=settings.career_mysql_user, password=password,

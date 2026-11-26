@@ -17,6 +17,16 @@ export interface OpenQuestion {
 
 export interface TaskReference { id: string; title: string; revision: string }
 
+export interface TrainingRequirements {
+  questionCount?: number
+  deadline?: string
+  requiredSkills?: string[]
+  prioritySkills?: string[]
+  requiredQuestions?: { id: string; version: number }[]
+  excludeCompleted?: boolean
+  timeZone?: string
+}
+
 export interface CareerTask {
   id: string
   kind: TaskKind
@@ -31,12 +41,14 @@ export interface CareerTask {
     notes?: { title: string; summary: string; reference: number }[]
     skills?: string[]
     steps?: string[]
+    schedule?: { title: string; skill: string | null; scheduledDate: string | null; questionRefs: string[] }[]
     feedback?: string
     sources?: { title: string; url: string; snippet: string }[]
     searchedAt?: string
     learning?: {
       policyVersion: string
-      priorities: { skill: string; misses: number; sampleSize: number; status: 'SELECTED' | 'AVAILABLE' | 'NO_CANDIDATE' }[]
+      priorities: { skill: string; misses: number; sampleSize: number; reason?: string;
+        status: 'SELECTED' | 'AVAILABLE' | 'NO_CANDIDATE' }[]
     }
   } | null
   error: string | null
@@ -54,6 +66,7 @@ export interface TaskEvent {
   elapsedMs: number
   inputTokens: number | null
   outputTokens: number | null
+  details?: { errorCode?: string; validation?: { errors: { code: string; message: string; field: string }[] } } | null
 }
 
 export interface JobMemory {
@@ -129,7 +142,7 @@ export const careerWorkflow = {
   prepare: (input: JobRequest & PreparationInput & { requestId: string; topic?: string; purpose?: 'NOTES' }) => post<CareerTask>('/career/tasks/preparation', input),
   discover: (input: JobRequest & { requestId: string }) => post<CareerTask>('/career/tasks/discovery', input),
   training: (input: JobRequest & PreparationInput & { requestId: string; role?: string; preparationId?: string; preferredQuestion?: string;
-    previousPlanId?: string; reviewTaskId?: string }) =>
+    previousPlanId?: string; reviewTaskId?: string; requirements?: TrainingRequirements }) =>
     post<CareerTask>('/career/tasks/training', input),
   review: (input: { requestId: string; planId: string }) => post<CareerTask>('/career/tasks/review', input),
   interview: (input: JobRequest & PreparationInput & { requestId: string; questionId: string; questionVersion: number; answer: string }) =>

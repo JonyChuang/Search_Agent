@@ -79,5 +79,5 @@ class CareerChatToolsTest(IsolatedAsyncioTestCase):
             events = [event async for event in service._generate_events(uuid4(), conv, body, [], [], "Bearer fixture")]
         create.assert_awaited_once_with(body.career_plan_request_id, pinned=[
             {"field": "截止时间", "value": "周五", "source_message_id": source, "confirmed": True, "version": 4},
-        ])
+        ], conversation_id=str(conv.id), request_text="请按照新的截止时间重新安排我的训练计划。", time_zone=None)
         self.assertEqual(events[1]["status"], "success")
